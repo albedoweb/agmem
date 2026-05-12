@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/nikolay/www/citadel/infrastructure/**)",
+      "Read(//Users/nikolay/www/citadel/infrastructure/terraform/**)"
+    ]
+  }
+}

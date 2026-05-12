@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: agmem
+Version: 0.1.0
+Summary: CLI memory layer for coding agents — persistent, searchable project context across sessions.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: typer>=0.15
+Requires-Dist: rank-bm25>=0.2.2
+Requires-Dist: python-ulid>=3.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: typing-extensions>=4.0

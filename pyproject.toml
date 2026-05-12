@@ -1,0 +1,72 @@
+[project]
+name = "agmem"
+version = "0.1.0"
+description = "CLI memory layer for coding agents — persistent, searchable project context across sessions, files, decisions, and bugs."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "agmem contributors"},
+]
+keywords = ["cli", "coding-agent", "memory", "context", "agent-memory"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15",
+    "rank-bm25>=0.2.2",
+    "python-ulid>=3.0",
+    "pyyaml>=6.0",
+    "typing-extensions>=4.0",
+    "pathspec>=0.12",
+]
+
+[project.scripts]
+agmem = "agmem.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agmem"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "TID252"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+exclude = ["^tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "mypy>=1.20",
+    "ruff>=0.15",
+    "types-pyyaml>=6.0",
+]

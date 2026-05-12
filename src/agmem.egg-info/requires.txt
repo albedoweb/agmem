@@ -1,0 +1,5 @@
+typer>=0.15
+rank-bm25>=0.2.2
+python-ulid>=3.0
+pyyaml>=6.0
+typing-extensions>=4.0
