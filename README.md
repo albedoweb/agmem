@@ -13,7 +13,11 @@ Works with **Claude Code, Codex, opencode, Cursor, Aider** — anything that
 runs a shell command. 60-second install:
 
 ```bash
-uv tool install agmem
+# Alpha — not yet on PyPI under this name. Install from source:
+uv tool install --from git+https://github.com/albedoweb/agmem agmem
+# …or from a local clone:
+git clone https://github.com/albedoweb/agmem && uv tool install --from ./agmem agmem
+
 cd my-repo && agmem init && agmem index
 agmem context "rds bastion ec2 instance"
 ```
@@ -47,6 +51,11 @@ agmem context "rds bastion ec2 instance"
 aliases, grouped as **Constraints / Facts / Patterns**, each with `source_ref`
 and commit. Hand the markdown to your agent.
 
+Phrase queries as **identifier-rich noun fragments** (`waf-alb-external mytruv
+istio-gateway-external count`), not full sentences. BM25 ranks short token
+matches over verbose natural language — the agent guide block emitted by
+`--emit-claude-md` has the full phrasing convention with examples.
+
 For things the indexer can't infer — team conventions, "don't do X again" —
 write them once with `agmem remember "..." --kind rule`. Rules get a 4× score
 boost in retrieval.
@@ -76,7 +85,31 @@ custom CI scripts — see the [agent integration guide](./DESIGN.md#use-with-you
 - Tracks drift — every entry carries `source_hash` + `source_commit`.
 - Searches inside markdown sections, not just whole files.
 
-> Real A/B benchmark numbers coming after the n=4 experiment expansion.
+## Benchmark
+
+agmem's BM25 retrieval against [LongMemEval-S](https://arxiv.org/abs/2410.10813)
+(500 questions, per-question corpus of ~48 dialogue sessions):
+
+| K  | recall (strict) | recall_any | NDCG  |
+|---:|----------------:|-----------:|------:|
+| 3  |           86.6% |      94.8% | 0.872 |
+| 5  |       **90.8%** |      96.8% | 0.884 |
+| 10 |           94.7% |      98.6% | 0.901 |
+| 20 |           97.0% |      99.4% | 0.909 |
+
+MRR: **0.917**. Runtime: ~13s on a laptop. No vectors, no reranking, no LLM
+calls.
+
+`recall (strict)` = `|top_K ∩ gold| / |gold|` averaged over questions
+(LongMemEval standard; 65% of questions have 2-6 gold sessions, so this is
+harder than "any hit in top-K"). `recall_any` is the lenient "≥1 gold in
+top-K" variant. NDCG is real `1/log2(rank+1)`.
+
+LongMemEval is conversational — it measures chat-history retrieval, not code.
+agmem's primary use is code memory; see
+[`benchmark/longmemeval/`](./benchmark/longmemeval/) for full methodology and
+reproduction steps, and `agmem eval-agmem` for the code-retrieval Track A
+metric that drives day-to-day tuning.
 
 ## Inspirations
 

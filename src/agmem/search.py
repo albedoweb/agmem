@@ -76,7 +76,7 @@ _TITLE_RE = re.compile(r'Markdown doc — "([^"]+)"')
 # λ=0.7 balances 70% relevance vs 30% diversity — the empirical sweet spot
 # in IR literature. pool_size=20 gives MMR enough candidates to swap in
 # for diversity without re-scoring the entire corpus.
-DEFAULT_MMR_ENABLED = True
+DEFAULT_MMR_ENABLED = False
 DEFAULT_MMR_LAMBDA = 0.7
 DEFAULT_MMR_POOL_SIZE = 20
 
@@ -157,6 +157,11 @@ def _mmr_rerank(
     (λ * relevance) − ((1−λ) * max-similarity-to-already-selected).
     Returns top_k results.
 
+    Relevance scores are min-max normalized to [0, 1] before MMR so that
+    the diversity penalty (max 1−λ) has meaningful weight against scores
+    whose raw BM25 range can be arbitrarily wide. Original scores are
+    preserved in the output.
+
     Rank 1 (the highest-scoring entry) is always kept untouched — MMR only
     selects from rank 2 onward, preserving the best match.
     """
@@ -165,26 +170,40 @@ def _mmr_rerank(
     if top_k >= len(ranked):
         return ranked[:top_k]
 
+    # Min-max normalize scores to [0, 1] so diversity penalty isn't dwarfed
+    # by wide raw BM25 score gaps.
+    raw_scores = [s for _, s in ranked]
+    smin, smax = min(raw_scores), max(raw_scores)
+    if smax > smin:
+        norm = [(e, (s - smin) / (smax - smin)) for e, s in ranked]
+    else:
+        norm = [(e, 0.5) for e, _ in ranked]
+
     selected: list[tuple[MemoryEntry, float]] = []
-    remaining = list(ranked)
+    remaining = list(norm)
+    orig_by_id = {e.id: s for e, s in ranked}
 
     selected.append(remaining.pop(0))
 
     while remaining and len(selected) < top_k:
         best_idx = 0
         best_score = float("-inf")
-        for i, (cand, cand_score) in enumerate(remaining):
+        for i, (cand, cand_norm_score) in enumerate(remaining):
             max_sim = max(
                 _path_similarity(cand, sel_entry)
                 for sel_entry, _ in selected
             )
-            mmr_score = lambda_ * cand_score - (1 - lambda_) * max_sim
+            mmr_score = lambda_ * cand_norm_score - (1 - lambda_) * max_sim
             if mmr_score > best_score:
                 best_score = mmr_score
                 best_idx = i
         selected.append(remaining.pop(best_idx))
 
-    return selected
+    # Return with original scores intact
+    return [
+        (entry, orig_by_id.get(entry.id, 0.0))
+        for entry, _norm_score in selected
+    ]
 
 
 def search(
@@ -195,7 +214,7 @@ def search(
     kind_boost: dict[str, float] | None = None,
     source_boost: dict[str, float] | None = None,
     aliases: dict[str, list[str]] | None = None,
-    mmr_enabled: bool = True,
+    mmr_enabled: bool = False,
     mmr_lambda: float = 0.7,
 ) -> list[tuple[MemoryEntry, float]]:
     if not entries:
@@ -242,7 +261,7 @@ def search_filtered(
     cwd: str | None = None,
     kind_boost: dict[str, float] | None = None,
     source_boost: dict[str, float] | None = None,
-    mmr_enabled: bool = True,
+    mmr_enabled: bool = False,
     mmr_lambda: float = 0.7,
 ) -> list[tuple[MemoryEntry, float]]:
     from .store import read_all_entries

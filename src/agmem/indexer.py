@@ -122,6 +122,8 @@ def _git_head_sha(root: Path) -> str | None:
     return sha or None
 
 
+
+
 def _file_sha256(path: Path) -> str | None:
     try:
         h = hashlib.sha256()
@@ -409,8 +411,9 @@ def _build_memories(
 
         block_list = "; ".join(b.full_name for b in analysis.blocks[:20])
         suffix = f" + {len(analysis.blocks) - 20} more" if len(analysis.blocks) > 20 else ""
+        header = f"Purpose: {analysis.header_comment} " if analysis.header_comment else ""
         entries.append(_build_entry(
-            text=f"{prefix}File `{path}` — {analysis.summary}. Items: {block_list}{suffix}.",
+            text=f"{prefix}{header}File `{path}` — {analysis.summary}. Items: {block_list}{suffix}.",
             tags=base_tags,
             source=INDEX_SOURCE,
             source_ref=path,
@@ -628,4 +631,83 @@ def run_update(since_ref: str = "HEAD~1", cwd: str | None = None) -> dict:
         "deleted": len(deleted_paths),
         "upserted": len(new_entries),
         "removed": len(remove_ids),
+    }
+
+
+def apply_paths(
+    paths_modified: list[str],
+    paths_deleted: list[str],
+    cwd: str | None = None,
+) -> dict:
+    """Reindex a specific set of paths and remove entries for deleted paths.
+
+    Used by ``agmem watch`` to apply queue batches without going through git.
+    Mirrors :func:`run_update`'s behavior but takes paths directly instead
+    of computing them from ``git diff <since_ref>``.
+
+    Skips paths covered by :func:`_should_skip` (``.agmem/``, ``.git/``,
+    ``.gitignore``-matched). Returns counts of upserts / removes / skipped.
+    """
+    from . import config as _config
+    root = _config.find_repo_root(cwd)
+    spec = _load_gitignore(root)
+
+    surviving: list[str] = []
+    deleted: list[str] = []
+    skipped = 0
+    for p in paths_modified:
+        full = root / p
+        if _should_skip(full, root, spec) or not full.is_file():
+            skipped += 1
+            continue
+        surviving.append(p)
+    for p in paths_deleted:
+        full = root / p
+        if _should_skip(full, root, spec):
+            skipped += 1
+            continue
+        deleted.append(p)
+
+    if not surviving and not deleted:
+        return {"upserted": 0, "removed": 0, "skipped_ignored": skipped}
+
+    # Build FileInfo entries directly from paths (no directory walk).
+    affected_files: list[FileInfo] = []
+    for p in surviving:
+        full = root / p
+        try:
+            size = full.stat().st_size
+        except OSError:
+            continue
+        parent = str(Path(p).parent) if Path(p).parent != Path(".") else "."
+        affected_files.append(FileInfo(
+            path=p,
+            ext=full.suffix,
+            size=size,
+            directory=parent,
+        ))
+
+    commit = _git_head_sha(root)
+    existing = read_all_entries(cwd, include_deleted=True)
+    preserve_from = {e.id: e for e in existing if e.source == INDEX_SOURCE}
+
+    parser_cfg = load_parser_config(config.agmem_dir(cwd))
+    new_entries = _build_memories(
+        affected_files, root, commit, preserve_from,
+        include_summary=False, parser_config=parser_cfg,
+    )
+    new_ids = {e.id for e in new_entries}
+
+    remove_ids: set[str] = set()
+    for p in deleted:
+        remove_ids.add(stable_id(INDEX_SOURCE, p))
+
+    final = [e for e in existing if e.id not in new_ids and e.id not in remove_ids]
+    final.extend(new_entries)
+    rewrite_entries(final, cwd)
+
+    return {
+        "upserted": len(new_entries),
+        "removed": len(remove_ids),
+        "skipped_ignored": skipped,
     }

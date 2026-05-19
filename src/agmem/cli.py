@@ -44,6 +44,7 @@ from .agmem_eval import (
 )
 from .testq import Snapshot, diff_against_snapshot, record_snapshot, run_testq
 from .verify import run_verify
+from .watch import apply_queue_once, run_watch
 
 app = typer.Typer(
     name="agmem",
@@ -996,6 +997,61 @@ def stats(
     typer.echo(f"hot: exists={hot['exists']}" + (f" mtime={hot.get('mtime')}" if hot["exists"] else ""))
 
 
+@app.command(name="eval-longmemeval")
+def eval_longmemeval(
+    top_k: str = typer.Option(
+        "3,5,10,20", "--top-k",
+        help="Comma-separated K values for recall@K.",
+    ),
+    out: Optional[str] = typer.Option(
+        None, "--out", "-o",
+        help="Base path for CSV and JSON output (e.g. --out results/lme-baseline).",
+    ),
+    limit: int = typer.Option(
+        500, "--limit",
+        help="Max questions to evaluate (default: 500, the full dataset).",
+    ),
+):
+    """Run agmem against the LongMemEval-S benchmark.
+
+    Per-question corpus methodology — see benchmark/longmemeval/README.md.
+    Requires ``pip install datasets`` and a downloaded dataset
+    (run ``python benchmark/longmemeval/download.py`` first).
+    """
+    from pathlib import Path as _Path
+
+    try:
+        from benchmark.longmemeval.run import run_longmemeval
+    except ImportError:
+        typer.echo(
+            "LongMemEval benchmark not found. Make sure benchmark/longmemeval/ "
+            "is in the Python path (run from the agmem repo root).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    ks = [int(x.strip()) for x in top_k.split(",")]
+    cache_dir = _Path(__file__).resolve().parent.parent.parent / "benchmark" / "longmemeval" / "cache"
+    report = run_longmemeval(top_k_values=ks, cache_dir=cache_dir, limit=limit)
+
+    typer.echo()
+    typer.echo(report.summary())
+
+    if out:
+        csv_path = _Path(f"{out}.csv")
+        json_path = _Path(f"{out}.json")
+        import csv as _csv, json as _json
+        rows = report.to_csv_rows()
+        with open(csv_path, "w", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
+        with open(json_path, "w") as f:
+            _json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
+        typer.echo(f"\nWrote {csv_path} ({len(rows)} rows)")
+        typer.echo(f"Wrote {json_path}")
+
+
 @app.command()
 def update(
     since: str = typer.Option(
@@ -1021,6 +1077,63 @@ def update(
         f"Updated since {since}: "
         f"{result['modified']} modified, {result['added']} added, {result['deleted']} deleted "
         f"→ {result['upserted']} upserted, {result['removed']} removed"
+    )
+
+
+@app.command()
+def watch(
+    interval: int = typer.Option(
+        600, "--interval", "-i",
+        help="Polling interval in seconds (default: 600 = 10 min).",
+    ),
+):
+    """Watch the repo for file changes and auto-reindex in batches.
+
+    Polls the filesystem every ``--interval`` seconds. On each cycle, diffs
+    mtimes against the previous snapshot, enqueues changed/created/deleted
+    paths, and partial-reindexes via ``apply_paths()``.
+
+    Survives crashes: on startup, drains any leftover ``_watch_queue.jsonl``
+    from a prior session.
+
+    To stop, press Ctrl-C.
+    """
+    try:
+        read_config()
+    except Exception:
+        typer.echo("Not initialized. Run `agmem init` first.", err=True)
+        raise typer.Exit(code=1)
+
+    if interval < 1:
+        typer.echo("--interval must be >= 1 second.", err=True)
+        raise typer.Exit(code=1)
+
+    run_watch(interval=interval)
+
+
+@app.command()
+def flush():
+    """Drain the watch queue and apply pending changes, then exit.
+
+    One-shot equivalent of what ``agmem watch`` does on each poll cycle.
+    Useful for cron jobs or CI workflows that want a periodic flush without
+    a long-running process.
+    """
+    try:
+        read_config()
+    except Exception:
+        typer.echo("Not initialized. Run `agmem init` first.", err=True)
+        raise typer.Exit(code=1)
+
+    result = apply_queue_once()
+    events = result.get("events", 0)
+    if events == 0:
+        typer.echo("Queue empty — nothing to flush.")
+        return
+    typer.echo(
+        f"Flushed {events} events: "
+        f"upserted={result['upserted']}, removed={result['removed']}, "
+        f"skipped={result.get('skipped_ignored', 0)}"
     )
 
 

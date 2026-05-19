@@ -38,3 +38,4 @@ class FileAnalysis:
     ext: str
     blocks: list[Block] = field(default_factory=list)
     summary: str = ""
+    header_comment: str = ""

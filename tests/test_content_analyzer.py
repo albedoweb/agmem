@@ -6,6 +6,7 @@ from agmem.content_analyzer import (
     extract_tags_from_blocks,
     TfBlock,
 )
+from agmem.parsers.tf import extract_header
 
 
 TF_FILE = '''
@@ -100,3 +101,59 @@ def test_tf_block_full_name():
 def test_empty_tf():
     blocks = analyze_tf("# just a comment")
     assert blocks == []
+
+
+def test_extract_header_basic():
+    content = '''# WAF in monitoring (count) mode for the public istio-gateway-external ALB.
+# All rules start with override_action=count so we can observe what would fire.
+
+resource "aws_wafv2_web_acl" "external" {
+  name = "mytruv-prod"
+}
+'''
+    h = extract_header(content)
+    assert "WAF in monitoring (count) mode" in h
+    assert "istio-gateway-external" in h
+    assert "override_action=count" in h
+    assert "aws_wafv2_web_acl" not in h
+
+
+def test_extract_header_stops_at_code():
+    content = '''# leading line
+resource "foo" "bar" {
+# this comment is INSIDE the body and must NOT appear
+}
+'''
+    assert extract_header(content) == "leading line"
+
+
+def test_extract_header_handles_blank_lines_inside_block():
+    content = '''# paragraph one
+#
+# paragraph two
+resource "x" "y" {}
+'''
+    h = extract_header(content)
+    assert "paragraph one" in h
+    assert "paragraph two" in h
+
+
+def test_extract_header_no_comment():
+    assert extract_header('resource "x" "y" {}\n') == ""
+
+
+def test_extract_header_truncates_long():
+    long_line = "# " + "word " * 500
+    h = extract_header(long_line + "\nresource \"x\" \"y\" {}\n")
+    assert 0 < len(h) <= 200
+
+
+def test_analyze_file_tf_includes_header():
+    content = '''# Purpose-prefix line about the file.
+# Second comment line.
+resource "aws_docdb_cluster" "primary" {}
+'''
+    analysis = analyze_file("modules/docdb/main.tf", content)
+    assert analysis is not None
+    assert "Purpose-prefix" in analysis.header_comment
+    assert "Second comment line" in analysis.header_comment
