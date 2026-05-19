@@ -101,11 +101,63 @@ def _resolve_cwd(cwd: str | None = None) -> Path:
 
 
 def find_repo_root(cwd: str | None = None) -> Path:
+    """Return the repository root, resolving git worktrees to the main worktree.
+
+    A "git worktree" (created via ``git worktree add``) has a ``.git`` FILE,
+    not a directory, containing ``gitdir: <path>/.git/worktrees/<name>``. All
+    worktrees of the same repo should share one ``.agmem/`` — the indexed
+    memory is about the codebase, not the branch — so we resolve back to
+    the main worktree.
+
+    Submodules also have a ``.git`` file (``gitdir: <super>/.git/modules/...``)
+    but those are conceptually separate repos and should have their own
+    ``.agmem/``; we leave the submodule path as-is.
+    """
     path = _resolve_cwd(cwd)
     for parent in [path, *path.parents]:
-        if (parent / ".git").exists():
+        git_marker = parent / ".git"
+        if not git_marker.exists():
+            continue
+        if git_marker.is_dir():
+            return parent
+        if git_marker.is_file():
+            main = _resolve_worktree_main_repo(git_marker)
+            if main is not None:
+                return main
+            # Submodule or malformed — treat the marker dir as its own repo.
             return parent
     return path
+
+
+def _resolve_worktree_main_repo(git_file: Path) -> Path | None:
+    """Parse a worktree ``.git`` file and return the main repo's working tree.
+
+    Returns ``None`` if the file points at anything other than a worktree
+    (notably submodules, whose gitdir is under ``<super>/.git/modules/``).
+    """
+    try:
+        content = git_file.read_text()
+    except OSError:
+        return None
+    gitdir_str: str | None = None
+    for line in content.splitlines():
+        if line.startswith("gitdir:"):
+            gitdir_str = line.split(":", 1)[1].strip()
+            break
+    if not gitdir_str:
+        return None
+    gitdir = Path(gitdir_str)
+    if not gitdir.is_absolute():
+        gitdir = (git_file.parent / gitdir).resolve()
+    parts = gitdir.parts
+    # Worktree pattern: <main-repo>/.git/worktrees/<name>
+    try:
+        idx = parts.index("worktrees")
+    except ValueError:
+        return None  # Not a worktree (likely submodule under .git/modules/).
+    if idx == 0 or parts[idx - 1] != ".git":
+        return None
+    return Path(*parts[: idx - 1])
 
 
 def agmem_dir(cwd: str | None = None) -> Path:

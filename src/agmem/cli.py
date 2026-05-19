@@ -20,7 +20,7 @@ from .hook import run_inject_hook
 from .hot import DEFAULT_BUDGET_CHARS, hot_path, read_hot, run_refresh as run_hot_refresh
 from .indexer import run_index, run_update
 from .render import render_context, render_recall
-from .search import search_filtered
+from .search import _read_mmr_config, search_filtered
 from .store import (
     VALID_KINDS,
     append_entry,
@@ -31,6 +31,17 @@ from .store import (
 )
 from .review import run_review
 from .stats import collect_stats
+from .agmem_eval import (
+    EvalReport,
+    extract_eval_pairs,
+    format_report,
+    load_pairs,
+    run_eval,
+    run_sweep,
+    save_pairs,
+    write_csv,
+    write_json,
+)
 from .testq import Snapshot, diff_against_snapshot, record_snapshot, run_testq
 from .verify import run_verify
 
@@ -180,6 +191,15 @@ def recall(
     json_mode: bool = typer.Option(
         False, "--json", help="Output as JSON array"
     ),
+    no_mmr: bool = typer.Option(
+        False, "--no-mmr",
+        help="Disable MMR diversity reranking for this query.",
+    ),
+    mmr_lambda: Optional[float] = typer.Option(
+        None, "--mmr-lambda",
+        help="MMR relevance-vs-diversity trade-off (0.0–1.0, default 0.7). "
+             "Higher = more relevance, less diversity.",
+    ),
 ):
     """Search memories by query and output markdown."""
     try:
@@ -188,7 +208,13 @@ def recall(
         typer.echo("Not initialized. Run `agmem init` first.", err=True)
         raise typer.Exit(code=1)
 
-    results = search_filtered(query, limit=n)
+    mmr_on, mmr_lam = _read_mmr_config()
+    if no_mmr:
+        mmr_on = False
+    if mmr_lambda is not None:
+        mmr_lam = mmr_lambda
+
+    results = search_filtered(query, limit=n, mmr_enabled=mmr_on, mmr_lambda=mmr_lam)
     if not json_mode:
         from .config import find_repo_root
         typer.echo(f"# Reading memories from {find_repo_root() / '.agmem'}\n")
@@ -200,6 +226,12 @@ def recall(
 def context(
     task: Optional[str] = typer.Argument(None, help="Task description for context generation"),
     n: int = typer.Option(10, "--limit", "-n", help="Max results"),
+    tag: Optional[str] = typer.Option(
+        None, "--tag", "-t",
+        help="Restrict retrieval to entries carrying this tag. Useful when the "
+             "agent knows the relevant area (e.g. --tag mytruv) and wants to "
+             "exclude tangentially-matching content from other subsystems.",
+    ),
     session: bool = typer.Option(
         False, "--session", "-s",
         help="Session-aware retrieval: demote already-seen entries, boost sibling "
@@ -220,6 +252,15 @@ def context(
     ),
     json_mode: bool = typer.Option(
         False, "--json", help="Output as JSON array"
+    ),
+    no_mmr: bool = typer.Option(
+        False, "--no-mmr",
+        help="Disable MMR diversity reranking for this query.",
+    ),
+    mmr_lambda: Optional[float] = typer.Option(
+        None, "--mmr-lambda",
+        help="MMR relevance-vs-diversity trade-off (0.0–1.0, default 0.7). "
+             "Higher = more relevance, less diversity.",
     ),
 ):
     """Generate agent-oriented context for a task.
@@ -257,13 +298,20 @@ def context(
         )
         raise typer.Exit(code=1)
 
+    mmr_on, mmr_lam = _read_mmr_config()
+    if no_mmr:
+        mmr_on = False
+    if mmr_lambda is not None:
+        mmr_lam = mmr_lambda
+
     if not json_mode:
         from .config import find_repo_root
         typer.echo(f"<!-- agmem source: {find_repo_root() / '.agmem'} -->")
 
     if session:
         from .ask import render_haven_seen_tail, run_ask
-        result = run_ask(task, top_n=n, new_session=new)
+        result = run_ask(task, top_n=n, new_session=new, tag=tag,
+                         mmr_enabled=mmr_on, mmr_lambda=mmr_lam)
         output = render_context(task, result.top, json_mode=json_mode)
         if not json_mode:
             tail = render_haven_seen_tail(result)
@@ -272,7 +320,8 @@ def context(
         typer.echo(output)
         return
 
-    results = search_filtered(task, limit=n)
+    results = search_filtered(task, limit=n, tag=tag,
+                              mmr_enabled=mmr_on, mmr_lambda=mmr_lam)
     output = render_context(task, results, json_mode=json_mode)
     typer.echo(output)
 
@@ -542,6 +591,187 @@ def testq(
     typer.echo(f"\n{len(testq_result.passed)}/{testq_result.total} passed")
     if testq_result.failed:
         raise typer.Exit(code=1)
+
+
+@app.command(name="eval-agmem")
+def eval_agmem(
+    since: Optional[str] = typer.Option(
+        "30d", "--since",
+        help="Time window for session discovery (e.g. 30d, 7d, 90d). Use '' for all.",
+    ),
+    cwd_filter: Optional[str] = typer.Option(
+        None, "--cwd",
+        help="Only score sessions whose repo root matches this path.",
+    ),
+    out: Optional[str] = typer.Option(
+        None, "--out", "-o",
+        help="Base path for CSV and JSON output files (e.g. --out eval-results/report).",
+    ),
+    window: int = typer.Option(
+        20, "--window", "-w",
+        help="Tool-call window size after each agmem context call.",
+    ),
+    k_headline: int = typer.Option(
+        5, "--k", "-k",
+        help="Headline K for coverage and recall reporting (also reports at 3, 10, 20).",
+    ),
+    json_only: bool = typer.Option(
+        False, "--json", help="Output full report as JSON to stdout instead of markdown summary.",
+    ),
+    collect: Optional[str] = typer.Option(
+        None, "--collect",
+        help="Extract pairs from agent-diff sessions and freeze to a JSON file, then exit "
+             "(no scoring). Pass the filename, e.g. --collect .agmem/eval-pairs.json.",
+    ),
+    pairs_file: Optional[str] = typer.Option(
+        None, "--pairs-file",
+        help="Score against a frozen pairs file instead of extracting from agent-diff. "
+             "Use after --collect to track drift. E.g. --pairs-file .agmem/eval-pairs.json.",
+    ),
+):
+    """Evaluate agmem retrieval quality against real agent-diff session logs.
+
+    Two-phase workflow for drift tracking:
+
+    1. Freeze the dataset once:
+       agmem eval-agmem --since '' --collect .agmem/eval-pairs.json
+
+    2. Re-score against the frozen dataset after index/search changes:
+       agmem eval-agmem --pairs-file .agmem/eval-pairs.json
+
+    Without --collect or --pairs-file, extracts and scores in one shot (live).
+    """
+    try:
+        read_config()
+    except Exception:
+        typer.echo("Not initialized. Run `agmem init` first.", err=True)
+        raise typer.Exit(code=1)
+
+    since_val = since if since else None
+    ks = [3, 5, 10, 20]
+
+    if collect:
+        from pathlib import Path
+        pairs = extract_eval_pairs(since=since_val, cwd_filter=cwd_filter, window_turns=window)
+        collect_path = Path(collect)
+        save_pairs(pairs, collect_path)
+        typer.echo(f"Frozen {len(pairs)} pairs to {collect_path}")
+        return
+
+    if pairs_file:
+        from pathlib import Path
+        pairs = load_pairs(Path(pairs_file))
+        report = run_eval(pairs=pairs, ks=ks)
+    else:
+        report = run_eval(
+            since=since_val,
+            cwd_filter=cwd_filter,
+            window_turns=window,
+            ks=ks,
+        )
+
+    if json_only:
+        import json as _json
+        typer.echo(_json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(format_report(report, k_headline=k_headline))
+
+    if out:
+        from pathlib import Path
+        csv_path = Path(f"{out}.csv")
+        json_path = Path(f"{out}.json")
+        write_csv(report, csv_path)
+        write_json(report, json_path)
+        typer.echo(f"\nWrote {csv_path} ({report.n_pairs} rows)")
+        typer.echo(f"Wrote {json_path}")
+
+
+@app.command(name="eval-agmem-sweep")
+def eval_agmem_sweep(
+    param: Optional[list[str]] = typer.Option(
+        None, "--param",
+        help="Parameter to sweep: 'name=val1,val2,...'. Repeat for multiple params. "
+             "Supported: kind_boost.rule, kind_boost.pattern, source_boost.manual, "
+             "source_ref_weight, basename_weight, title_weight, b.",
+    ),
+    metric: str = typer.Option(
+        "hit_at_5", "--metric",
+        help="Metric to optimize: hit_at_3, hit_at_5, hit_at_10, hit_at_20, "
+             "recall_at_5, mrr.",
+    ),
+    since: Optional[str] = typer.Option(
+        "30d", "--since",
+        help="Time window for session discovery (e.g. 30d, 7d, 90d).",
+    ),
+    out: Optional[str] = typer.Option(
+        None, "--out", "-o",
+        help="Base path for sweep CSV output.",
+    ),
+    pairs_file: Optional[str] = typer.Option(
+        None, "--pairs-file",
+        help="Score against a frozen pairs file instead of extracting from agent-diff.",
+    ),
+):
+    """Grid-search agmem parameter values across the eval set.
+
+    Monkey-patches search module constants, re-scores all pairs, and reports
+    the best parameter combo per the chosen metric.
+    """
+    try:
+        read_config()
+    except Exception:
+        typer.echo("Not initialized. Run `agmem init` first.", err=True)
+        raise typer.Exit(code=1)
+
+    if not param:
+        typer.echo("Pass at least one --param (e.g. --param 'kind_boost.rule=2,3,4').", err=True)
+        raise typer.Exit(code=1)
+
+    since_val = since if since else None
+
+    preloaded_pairs = None
+    if pairs_file:
+        from pathlib import Path
+        preloaded_pairs = load_pairs(Path(pairs_file))
+
+    result = run_sweep(param_specs=param, metric=metric, since=since_val, pairs=preloaded_pairs)
+
+    if result.get("error"):
+        typer.echo(result["error"], err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Sweep: {result['n_pairs']} pairs × {result['n_combos']} combos")
+    typer.echo(f"Metric: {metric}")
+    typer.echo()
+    typer.echo(f"Best: {result['best_score']:.4f}")
+    typer.echo(f"Params: {result['best_params']}")
+    typer.echo()
+
+    header = ["score"] + list(result["params_order"]) + ["kind_boost_rule", "kind_boost_pattern", "source_boost_manual", "source_ref_weight"]
+    rows = [[f"{r['score']:.4f}"] + [str(r["params"].get(p, "")) for p in result["params_order"]] + [
+        str(r["params"].get("kind_boost.rule", "")),
+        str(r["params"].get("kind_boost.pattern", "")),
+        str(r["params"].get("source_boost.manual", "")),
+        str(r["params"].get("source_ref_weight", "")),
+    ] for r in result["results"]]
+
+    max_widths = [max(len(h), max((len(row[i]) for row in rows), default=0)) for i, h in enumerate(header)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in max_widths)
+    typer.echo(fmt.format(*header))
+    for row in rows:
+        typer.echo(fmt.format(*row))
+
+    if out:
+        import csv as _csv
+        from pathlib import Path
+        csv_path = Path(f"{out}.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=header)
+            writer.writeheader()
+            for row_dict, row_vals in zip(result["results"], rows):
+                writer.writerow(dict(zip(header, row_vals)))
+        typer.echo(f"\nWrote {csv_path}")
 
 
 @app.command()
