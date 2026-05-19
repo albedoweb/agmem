@@ -5,7 +5,7 @@ store. BM25 retrieval. Git-aware — `post-merge` hook keeps memory in sync when
 teammates push. No embeddings, no MCP, no SaaS. Apache 2.0.
 
 > Your `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/` are static. Your repo
-> isn't. `agmem` indexes your code (Terraform, Python, Markdown, ADRs),
+> isn't. `agmem` indexes your code (Terraform, Python, Markdown, Go),
 > extracts glossary aliases automatically, and answers task-relevant queries
 > in ~50ms with source hashes you can `verify`.
 
@@ -29,7 +29,7 @@ agmem context "rds bastion ec2 instance"
 - For bastion hosts in front of AWS data services, prefer
   modules/aws/rds-bastion-ec2 over modules/ec2-instance (generic).
   Mirrors the prod-style pattern.
-  (manual · 2026-04-21 · ref: terraform/aws/prod/us-west-2/rds/rds_bastion.tf)
+  (manual · 2026-04-21 · ref: terraform/rds/rds_bastion.tf)
 
 ## Facts
 - Section "S3 module variables" of `services/s3.md` — s3_bucket_name,
@@ -43,9 +43,7 @@ agmem context "rds bastion ec2 instance"
 
 - Terraform resources, modules, variables, outputs
 - Python classes, top-level functions, FastAPI-style routes
-- Markdown sections (long docs split per H2) + ADR status
-- Glossary terms — `agmem suggest-aliases` lifts `bomber → webhook, delivery`
-  out of `glossary.md` so a query for "core" finds `citadel-backend`
+- Markdown sections (long docs split per H2) + PRD status
 
 `agmem context "<task>"` returns task-relevant chunks ranked by BM25 + lexical
 aliases, grouped as **Constraints / Facts / Patterns**, each with `source_ref`
