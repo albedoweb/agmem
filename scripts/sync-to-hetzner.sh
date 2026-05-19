@@ -4,14 +4,19 @@ set -euo pipefail
 HOST="${1:-hetzner}"
 REMOTE_DIR="/home/nikolay/projects/agmem"
 
-echo "Syncing to ${HOST}:${REMOTE_DIR} ..."
+echo "Syncing source to ${HOST}:${REMOTE_DIR} ..."
 
-# Copy non-dot stuff: src/, tests/, scripts/, pyproject.toml, uv.lock, README.md, LICENSE, DESIGN.md, CLAUDE.md
+# Sync everything from the git-tracked tree + .agmem/ config
 rsync -avz --progress \
-  --exclude '.*' \
-  --exclude '.agmem/' \
-  --exclude '.venv/' \
-  --exclude '.pytest_cache/' \
+  --exclude='.git/' \
+  --exclude='.venv/' \
+  --exclude='__pycache__/' \
+  --exclude='*.pyc' \
+  --exclude='.pytest_cache/' \
+  --exclude='.ruff_cache/' \
+  --exclude='.mypy_cache/' \
+  --exclude='*.egg-info/' \
+  --exclude='.DS_Store' \
   /Users/nikolay/projects/agmem/ \
   "${HOST}:${REMOTE_DIR}/"
 

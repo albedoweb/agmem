@@ -1,0 +1,59 @@
+{
+  "started_at": "2026-05-09T20:56:59+00:00",
+  "queries": [
+    {
+      "q": "n=4 experiment harness protocol how to run",
+      "ts": "2026-05-09T20:56:59+00:00",
+      "returned_refs": [
+        "README.md#why-not-just-grep",
+        "src/agmem/review.py",
+        "src/agmem/parsers/__init__.py",
+        "DESIGN.md#use-with-your-agent",
+        "scripts/exp",
+        "tests/test_search.py",
+        "src/agmem/aliases.py"
+      ]
+    }
+  ],
+  "seen_refs": [
+    "README.md#why-not-just-grep",
+    "src/agmem/review.py",
+    "src/agmem/parsers/__init__.py",
+    "DESIGN.md#use-with-your-agent",
+    "scripts/exp",
+    "tests/test_search.py",
+    "src/agmem/aliases.py"
+  ],
+  "seen_tags": [
+    "terraform",
+    "agmem",
+    "more",
+    "what-it-does",
+    "status",
+    "why-not-just-grep",
+    "development",
+    "use-with-your-agent",
+    "license",
+    "inspirations",
+    "why",
+    "not",
+    "just",
+    "grep",
+    "function",
+    "class",
+    "protocol",
+    "how-retrieval-works",
+    "design-principles",
+    "file-layout",
+    "memory-shape",
+    "design",
+    "comparison-to-similar-tools",
+    "use",
+    "with",
+    "your",
+    "agent",
+    "scripts",
+    "exp",
+    "test"
+  ]
+}
