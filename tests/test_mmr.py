@@ -85,10 +85,10 @@ class TestMmrRerank:
     def test_same_file_clustering_reduced(self):
         ranked = [
             (_e("plans/X.md", 1.0), 1.0),
-            (_e("plans/X.md#2", 0.9), 0.9),
-            (_e("plans/X.md#3", 0.8), 0.8),
-            (_e("plans/X.md#4", 0.7), 0.7),
+            (_e("plans/X.md#2", 0.6), 0.6),
+            (_e("plans/X.md#3", 0.55), 0.55),
             (_e("plans/Y.md", 0.5), 0.5),
+            (_e("plans/X.md#4", 0.4), 0.4),
         ]
         result = _mmr_rerank(ranked, top_k=3)
         refs = [e.source_ref for e, _ in result]
@@ -157,9 +157,9 @@ class TestMmrRerank:
     def test_mixed_same_and_different_files(self):
         ranked = [
             (_e("plans/A.md", 1.0), 1.0),
-            (_e("plans/A.md#2", 0.9), 0.9),
-            (_e("plans/B.md", 0.8), 0.8),
-            (_e("src/app.py", 0.7), 0.7),
+            (_e("plans/A.md#2", 0.55), 0.55),
+            (_e("plans/B.md", 0.5), 0.5),
+            (_e("src/app.py", 0.45), 0.45),
         ]
         result = _mmr_rerank(ranked, top_k=4)
         refs = [e.source_ref for e, _ in result]
@@ -189,3 +189,32 @@ class TestMmrRerank:
         assert len(result) == 2
         assert result[0][0].id == "id1"
         assert result[1][0].id == "id2"
+
+    def test_wide_score_gap_diversity_wins(self):
+        """Regression: raw BM25 scores dwarf diversity penalty without normalization."""
+        ranked = [
+            (_e("plans/X.md", 20.0), 20.0),
+            (_e("plans/X.md#2", 5.0), 5.0),
+            (_e("plans/Y.md", 1.0), 1.0),
+            (_e("plans/X.md#3", 0.5), 0.5),
+        ]
+        result = _mmr_rerank(ranked, top_k=3, lambda_=0.5)
+        refs = [e.source_ref for e, _ in result]
+        assert refs[0] == "plans/X.md"
+        assert refs[1] == "plans/Y.md"
+
+    def test_normalized_scores_preserved_in_output(self):
+        """Original BM25 scores survive MMR reranking unchanged."""
+        ranked = [
+            (_e("plans/X.md", 20.0), 20.0),
+            (_e("plans/X.md#2", 5.0), 5.0),
+            (_e("plans/Y.md", 1.0), 1.0),
+            (_e("plans/Y.md#appendix", 0.5), 0.5),
+        ]
+        result = _mmr_rerank(ranked, top_k=4, lambda_=0.5)
+        score_by_ref = {e.source_ref: s for e, s in result}
+        assert score_by_ref["plans/X.md"] == 20.0
+        if "plans/X.md#2" in score_by_ref:
+            assert score_by_ref["plans/X.md#2"] == 5.0
+        if "plans/Y.md" in score_by_ref:
+            assert score_by_ref["plans/Y.md"] == 1.0

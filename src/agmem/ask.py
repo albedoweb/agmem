@@ -218,7 +218,7 @@ def run_ask(
     new_session: bool = False,
     cwd: str | None = None,
     tag: str | None = None,
-    mmr_enabled: bool = True,
+    mmr_enabled: bool = False,
     mmr_lambda: float = 0.7,
 ) -> AskResult:
     """Execute a learning-mode retrieval and update session state.

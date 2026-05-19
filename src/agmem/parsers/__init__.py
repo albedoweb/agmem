@@ -73,11 +73,14 @@ def analyze_file(
     blocks = parser.analyze(content)
     if not blocks:
         return None
+    extract_header = getattr(parser, "extract_header", None)
+    header = extract_header(content) if extract_header else ""
     return FileAnalysis(
         path=path,
         ext=ext,
         blocks=blocks,
         summary=parser.summary(blocks),
+        header_comment=header,
     )
 
 
