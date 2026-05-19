@@ -217,15 +217,28 @@ def run_ask(
     top_n: int = DEFAULT_TOP_N,
     new_session: bool = False,
     cwd: str | None = None,
+    tag: str | None = None,
+    mmr_enabled: bool = True,
+    mmr_lambda: float = 0.7,
 ) -> AskResult:
-    """Execute a learning-mode retrieval and update session state."""
+    """Execute a learning-mode retrieval and update session state.
+
+    ``tag`` restricts the search to entries carrying that tag — same semantics
+    as ``agmem context --tag X``. Session state (seen refs / tags) still
+    updates, so follow-up queries in the same session keep their progressive
+    learning behavior.
+    """
     session = load_session(cwd)
     is_new = False
     if session is None or new_session or is_session_stale(session):
         session = AskSession(started_at=_now())
         is_new = True
 
-    raw = search_filtered(query, limit=max(top_n + SUGGESTION_POOL, 10), cwd=cwd)
+    raw = search_filtered(
+        query, limit=max(top_n + SUGGESTION_POOL, 10),
+        cwd=cwd, tag=tag,
+        mmr_enabled=mmr_enabled, mmr_lambda=mmr_lambda,
+    )
     if not raw:
         return AskResult(
             query=query,

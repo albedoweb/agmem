@@ -1,14 +1,15 @@
 <!-- agmem:start -->
 ## agmem — project memory
 
-At the start of a new session, run `agmem hot` for an instant snapshot of project rules
-and recent facts (no BM25, ≤500 tokens).
-
-Before any non-trivial task, retrieve task-specific memory:
+Before any non-trivial task — and **before any broad grep/find/Glob exploration of this
+repo** — retrieve task-specific memory:
 
 ```bash
-agmem context "<short task description>" -n 8
+agmem context "<short task description>" -n 8 --session
 ```
+
+agmem is your first lookup. Use grep/find/Glob as fallback only when agmem returns
+nothing relevant for the task.
 
 Treat the output's **Constraints** section as project rules — do not contradict them
 without explicit user override. Treat **Facts** and **Patterns** as observations to

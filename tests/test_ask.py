@@ -279,3 +279,31 @@ def test_run_ask_session_persists_to_disk(repo: Path):
     raw = json.loads((repo / ".agmem" / SESSION_FILENAME).read_text())
     assert raw["queries"][0]["q"] == "bomber"
     assert "services/bomber.md" in raw["seen_refs"]
+
+
+def test_run_ask_tag_filter_restricts_results(repo: Path):
+    """``run_ask(query, tag=X)`` should only return entries tagged X — even if
+    other entries match the query better by BM25."""
+    append_entry(create_entry(
+        text="Mytruv account ID is 443110314663",
+        source_ref="notes/mytruv.md", kind="fact",
+        source="manual", tags=["mytruv", "aws"],
+    ))
+    append_entry(create_entry(
+        text="Mytruv-related Truv-prod terraform shares modules from terraform/modules/aws/",
+        source_ref="notes/modules.md", kind="fact",
+        source="manual", tags=["modules"],
+    ))
+    # Query matches both, but only the first is tagged 'mytruv'.
+    result = run_ask("mytruv terraform", tag="mytruv")
+    returned = [e.id for e, _ in result.top]
+    assert len(returned) == 1
+    assert result.top[0][0].tags == ["mytruv", "aws"]
+
+
+def test_run_ask_no_tag_returns_unfiltered(repo: Path):
+    """Sanity check: without ``tag=``, both entries are eligible."""
+    append_entry(create_entry(text="foo bar baz", tags=["x"]))
+    append_entry(create_entry(text="foo bar qux", tags=["y"]))
+    result = run_ask("foo bar")
+    assert len(result.top) == 2

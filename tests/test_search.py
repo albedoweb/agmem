@@ -1,5 +1,7 @@
 """Tests for search module: BM25 relevance and filtering."""
 
+import pytest
+
 from agmem.search import search
 from agmem.store import MemoryEntry
 
@@ -76,3 +78,71 @@ def test_search_empty_query():
 def test_search_empty_entries():
     results = search("anything", [], top_n=5)
     assert results == []
+
+
+# ----- source boost (manual entries should outrank similar index entries) -----
+
+
+def _noise_entries(n: int) -> list[MemoryEntry]:
+    """Filler entries to make BM25 IDF positive in small test corpora.
+    Without noise, ``df == N`` for any query term that appears in every test
+    fixture entry → IDF goes negative and the boost test becomes degenerate.
+    """
+    return [
+        MemoryEntry(id=f"noise-{i}", ts="t", text=f"unrelated noise content {i}", source="index")
+        for i in range(n)
+    ]
+
+
+def test_manual_source_outranks_index_for_equivalent_text():
+    """Two entries with identical text and identical query relevance — the
+    manual one should win because of the source boost."""
+    entries = [
+        MemoryEntry(id="man1", ts="t", text="alpha beta gamma", source="manual"),
+        MemoryEntry(id="idx1", ts="t", text="alpha beta gamma", source="index"),
+        *_noise_entries(5),
+    ]
+    results = search("alpha beta", entries, top_n=2)
+    assert results[0][0].id == "man1"
+    assert results[1][0].id == "idx1"
+
+
+def test_source_boost_can_be_overridden():
+    """Caller can pass a different ``source_boost`` dict to disable or invert
+    the manual preference — useful for tests / experiments."""
+    entries = [
+        MemoryEntry(id="m", ts="t", text="alpha beta", source="manual"),
+        MemoryEntry(id="i", ts="t", text="alpha beta", source="index"),
+        *_noise_entries(5),
+    ]
+    # Empty boost dict: manual and index get the same multiplier (1.0) →
+    # raw BM25 scores are identical → equal final scores.
+    res_no_boost = search("alpha beta", entries, top_n=2, source_boost={})
+    s_manual = next(s for e, s in res_no_boost if e.id == "m")
+    s_index = next(s for e, s in res_no_boost if e.id == "i")
+    assert abs(s_manual - s_index) < 1e-6
+
+    # Default boost: manual entry ~2× the index entry.
+    res_default = search("alpha beta", entries, top_n=2)
+    s_manual_d = next(s for e, s in res_default if e.id == "m")
+    s_index_d = next(s for e, s in res_default if e.id == "i")
+    assert s_manual_d == pytest.approx(s_index_d * 2.0)
+
+
+def test_kind_and_source_boosts_compose():
+    """A manual rule should rank higher than an indexed rule, and a manual
+    fact higher than an indexed fact — boosts multiply, not replace."""
+    entries = [
+        MemoryEntry(id="ir", ts="t", text="alpha beta", source="index", kind="rule"),
+        MemoryEntry(id="mr", ts="t", text="alpha beta", source="manual", kind="rule"),
+        MemoryEntry(id="if", ts="t", text="alpha beta", source="index", kind="fact"),
+        MemoryEntry(id="mf", ts="t", text="alpha beta", source="manual", kind="fact"),
+        *_noise_entries(5),
+    ]
+    results = search("alpha beta", entries, top_n=4)
+    by_id = {e.id: s for e, s in results}
+    # Manual rule: 4.0 (kind) × 2.0 (source) = 8.0× raw
+    # Index rule:  4.0 (kind) × 1.0 = 4.0× raw
+    # Manual fact: 1.0 × 2.0 = 2.0× raw
+    # Index fact:  1.0 × 1.0 = 1.0× raw
+    assert by_id["mr"] > by_id["ir"] > by_id["mf"] > by_id["if"]

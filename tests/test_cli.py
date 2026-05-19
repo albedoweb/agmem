@@ -26,7 +26,10 @@ def _patch_config(monkeypatch, tmpdir: str):
         "agmem.cli.append_entry", lambda entry: None
     )
     monkeypatch.setattr(
-        "agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None: []
+        "agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None, **kw: []
+    )
+    monkeypatch.setattr(
+        "agmem.cli._read_mmr_config", lambda cwd=None: (True, 0.7)
     )
     monkeypatch.setattr(
         "agmem.store.config.agmem_dir", lambda cwd=None: tdp / ".agmem"
@@ -77,6 +80,9 @@ def _with_memory(monkeypatch, tmpdir: str, entries_data: list[dict]):
     )
     monkeypatch.setattr(
         "agmem.store.config.init_config", lambda project_name=None: {"version": 1, "project": project_name or "test"}
+    )
+    monkeypatch.setattr(
+        "agmem.cli._read_mmr_config", lambda cwd=None: (True, 0.7)
     )
 
     return entries
@@ -187,7 +193,7 @@ def test_recall_markdown(monkeypatch):
         ])
         from agmem.store import MemoryEntry
 
-        def _mock_search(query, limit=10, tag=None, cwd=None):
+        def _mock_search(query, limit=10, tag=None, cwd=None, **kw):
             entry = MemoryEntry.from_dict({
                 "id": "01A", "ts": "2026-01-01T00:00:00+00:00",
                 "text": "Billing webhooks must be idempotent.",
@@ -223,7 +229,7 @@ def test_recall_json(monkeypatch):
             "text": "A memory entry.",
             "tags": [], "source": "manual", "source_ref": None,
         })
-        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None: [(entry, 0.5)])
+        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None, **kw: [(entry, 0.5)])
         result = runner.invoke(app, ["recall", "memory", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -248,7 +254,7 @@ def test_context_markdown(monkeypatch):
             "text": "Do not call Stripe directly.",
             "tags": ["billing"], "source": "manual", "source_ref": None,
         })
-        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None: [(entry, 0.5)])
+        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None, **kw: [(entry, 0.5)])
         result = runner.invoke(app, ["context", "fix stripe bug"])
         assert result.exit_code == 0
         assert "Context for" in result.stdout
@@ -271,7 +277,7 @@ def test_context_json(monkeypatch):
             "text": "Important constraint.",
             "tags": [], "source": "manual", "source_ref": None,
         })
-        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None: [(entry, 0.5)])
+        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None, **kw: [(entry, 0.5)])
         result = runner.invoke(app, ["context", "task", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -282,7 +288,7 @@ def test_context_json(monkeypatch):
 def test_context_empty(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         _with_memory(monkeypatch, tmpdir, [])
-        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None: [])
+        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None, **kw: [])
         result = runner.invoke(app, ["context", "some task"])
         assert result.exit_code == 0
         assert "No relevant memories" in result.stdout
@@ -306,6 +312,6 @@ def test_recall_no_results(monkeypatch):
                 "tags": [], "source": "manual", "source_ref": None,
             },
         ])
-        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None: [])
+        monkeypatch.setattr("agmem.cli.search_filtered", lambda query, limit=10, tag=None, cwd=None, **kw: [])
         result = runner.invoke(app, ["recall", "zzznotfound"])
         assert result.exit_code == 0

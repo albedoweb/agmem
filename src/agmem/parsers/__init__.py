@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from . import md, py, tf
+from . import go, md, py, tf
 from .config import ParserConfig, load
 from .types import Block, FileAnalysis, TfBlock
 
@@ -41,6 +41,7 @@ _BUILTIN: dict[str, _ParserModule] = {
     "py": py,
     "md": md,
     "mdx": md,
+    "go": go,
 }
 
 
