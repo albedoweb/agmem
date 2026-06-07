@@ -19,6 +19,12 @@ from .search import search_filtered
 from .store import MemoryEntry
 
 AGENT_DIFF_RUNS_DIR = Path.home() / ".agent-diff" / "runs"
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+# Paths agmem prints in its `context` output: `… ref: src/foo.py …` lines and
+# any backtick-quoted path tokens. Used to compute the drift-free follow-rate.
+_OUTPUT_REF_RE = re.compile(r'ref:\s*([^\s·)]+)')
+_OUTPUT_BACKTICK_RE = re.compile(r'`([^`]+)`')
 
 _QUERY_RE = re.compile(
     r'agmem\s+context\s+'
@@ -43,6 +49,16 @@ class EvalPair:
     gold_files: set[str]
     window_size: int
     tag: str | None = None
+    followed: bool | None = None
+    """In-session follow signal (``None`` if the session output wasn't captured,
+    e.g. agent-diff logs): did agmem's actual ``context`` output at the time list
+    a path that the agent then Read/Edited in the window? This is drift-free —
+    it scores what the agent really saw, not a re-query of today's index."""
+    followed_soft: bool | None = None
+    """Looser variant: a gold file's basename appears anywhere in agmem's output
+    text (catches plan-doc references the agent followed to the code)."""
+    n_output_refs: int = 0
+    """How many distinct paths agmem printed in its output (diagnostic)."""
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +69,9 @@ class EvalPair:
             "gold_files": sorted(self.gold_files),
             "window_size": self.window_size,
             "tag": self.tag,
+            "followed": self.followed,
+            "followed_soft": self.followed_soft,
+            "n_output_refs": self.n_output_refs,
         }
 
     @classmethod
@@ -65,6 +84,9 @@ class EvalPair:
             gold_files=set(d.get("gold_files", [])),
             window_size=d.get("window_size", 20),
             tag=d.get("tag"),
+            followed=d.get("followed"),
+            followed_soft=d.get("followed_soft"),
+            n_output_refs=d.get("n_output_refs", 0),
         )
 
 
@@ -109,10 +131,26 @@ class EvalReport:
             return 0.0
         return statistics.mean(s.mrr for s in self.scores)
 
+    def follow_rate(self, soft: bool = False) -> tuple[float, int] | None:
+        """Drift-free in-session follow rate: fraction of pairs where agmem's
+        actual output listed a file the agent then used. Returns (rate, n) over
+        pairs that captured output, or None if none did (e.g. agent-diff logs)."""
+        vals = [(p.followed_soft if soft else p.followed) for p in self.pairs]
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            return None
+        return sum(1 for v in vals if v) / len(vals), len(vals)
+
     def summary_lines(self) -> list[str]:
         lines = [
             f"Pairs analyzed:   {self.n_pairs}",
         ]
+        fr = self.follow_rate(soft=False)
+        if fr is not None:
+            rate, n = fr
+            soft = self.follow_rate(soft=True)
+            lines.append(f"Follow rate (in-session, n={n}): {rate:.1%} strict"
+                         + (f" / {soft[0]:.1%} soft" if soft else ""))
         for k in sorted(self.ks):
             lines.append(
                 f"Coverage (Hit@{k}): {self.coverage(k):.1%}"
@@ -140,6 +178,8 @@ class EvalReport:
                 "n_top": len(s.top_k),
                 "mrr": round(s.mrr, 4),
                 "first_gold_rank": s.first_gold_rank if s.first_gold_rank is not None else "",
+                "followed": "" if s.pair.followed is None else s.pair.followed,
+                "followed_soft": "" if s.pair.followed_soft is None else s.pair.followed_soft,
             }
             for k in sorted(self.ks):
                 row[f"hit_at_{k}"] = s.hit_at.get(k, False)
@@ -150,12 +190,17 @@ class EvalReport:
         return rows
 
     def to_dict(self) -> dict:
+        fr = self.follow_rate(soft=False)
+        fr_soft = self.follow_rate(soft=True)
         return {
             "ks": sorted(self.ks),
             "n_pairs": self.n_pairs,
             "coverage": {str(k): self.coverage(k) for k in self.ks},
             "mean_recall": {str(k): self.mean_recall(k) for k in self.ks},
             "mean_mrr": self.mean_mrr(),
+            "follow_rate": (fr[0] if fr else None),
+            "follow_rate_soft": (fr_soft[0] if fr_soft else None),
+            "follow_rate_n": (fr[1] if fr else 0),
             "scores": [
                 {
                     "run_id": s.pair.run_id,
@@ -170,6 +215,9 @@ class EvalReport:
                     "recall_at": {str(k): v for k, v in s.recall_at.items()},
                     "mrr": s.mrr,
                     "first_gold_rank": s.first_gold_rank,
+                    "followed": s.pair.followed,
+                    "followed_soft": s.pair.followed_soft,
+                    "n_output_refs": s.pair.n_output_refs,
                 }
                 for s in self.scores
             ],
@@ -327,58 +375,227 @@ def _discover_run_files(
     return result
 
 
+def _agmem_output_refs(text: str) -> set[str]:
+    """Extract the repo-relative paths agmem printed in a ``context`` result:
+    ``ref: <path>`` markers plus backtick-quoted path-looking tokens. Worktree
+    prefixes are stripped and ``#section`` anchors dropped so the refs line up
+    with gold file paths."""
+    if not text:
+        return set()
+    paths: set[str] = set()
+    for m in _OUTPUT_REF_RE.finditer(text):
+        p = m.group(1).split("#", 1)[0].strip()
+        if p:
+            paths.add(_normalize_worktree_path(p))
+    for m in _OUTPUT_BACKTICK_RE.finditer(text):
+        tok = m.group(1).strip()
+        if " " in tok:
+            continue
+        if "/" in tok or re.search(r"\.\w{1,4}$", tok):
+            paths.add(_normalize_worktree_path(tok.split("#", 1)[0]))
+    return {p for p in paths if p}
+
+
+def _claude_result_text(block: dict) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def _load_claude_session(path: Path) -> list[dict]:
+    """Reshape a Claude Code native session log into the agent-diff event shape
+    (``event``/``tool_name``/``tool_input``/``timestamp``) so the same extraction
+    path works for both. Each tool_use event also carries its native ``cwd`` and
+    a ``_result`` field with the tool's captured output text (matched back via
+    ``tool_use_id``), enabling the drift-free follow-rate."""
+    try:
+        with open(path) as f:
+            raw = [line for line in f if line.strip()]
+    except OSError:
+        return []
+    events: list[dict] = []
+    by_id: dict[str, dict] = {}
+    first_cwd: str | None = None
+    for line in raw:
+        try:
+            o = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = o.get("type")
+        cwd = o.get("cwd", "")
+        ts = o.get("timestamp", "")
+        content = o.get("message", {}).get("content")
+        if t == "assistant" and isinstance(content, list):
+            for b in content:
+                if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                    continue
+                if first_cwd is None and cwd:
+                    first_cwd = cwd
+                ev = {
+                    "event": "tool_called",
+                    "tool_name": b.get("name", ""),
+                    "tool_input": b.get("input", {}) or {},
+                    "timestamp": ts,
+                    "cwd": cwd,
+                    "_result": "",
+                }
+                events.append(ev)
+                bid = b.get("id")
+                if bid:
+                    by_id[bid] = ev
+        elif t == "user" and isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    tuid = b.get("tool_use_id")
+                    target = by_id.get(tuid) if isinstance(tuid, str) else None
+                    if target is not None:
+                        target["_result"] = _claude_result_text(b)
+    if first_cwd:
+        events.insert(0, {"event": "run_started", "cwd": first_cwd})
+    return events
+
+
+def _discover_claude_files(since_str: str | None) -> list[Path]:
+    if not CLAUDE_PROJECTS_DIR.exists():
+        return []
+    since: datetime | None = None
+    if since_str:
+        since_str = since_str.strip()
+        try:
+            if since_str.endswith("d"):
+                since = datetime.now(timezone.utc) - timedelta(days=int(since_str[:-1]))
+        except (ValueError, TypeError):
+            pass
+    result = []
+    for path in sorted(CLAUDE_PROJECTS_DIR.rglob("*.jsonl")):
+        if since:
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                if mtime < since:
+                    continue
+            except OSError:
+                continue
+        result.append(path)
+    return result
+
+
+def _discover_sessions(
+    run_ids: list[str] | None,
+    since: str | None,
+    source: str,
+) -> list[tuple[str, list[dict], bool]]:
+    """Resolve the requested source(s) to ``(run_id, events, has_output)`` tuples.
+
+    ``source`` is one of ``auto`` | ``claude`` | ``agent-diff``. ``auto`` prefers
+    Claude native logs when present (they're a superset that still records, unlike
+    agent-diff) and otherwise falls back to agent-diff. ``has_output`` is True for
+    Claude sessions, which carry tool output for the follow-rate.
+    """
+    use_claude = source == "claude"
+    use_agent_diff = source == "agent-diff"
+    if source == "auto":
+        if not run_ids and _discover_claude_files(None):
+            use_claude = True
+        else:
+            use_agent_diff = True
+
+    sessions: list[tuple[str, list[dict], bool]] = []
+    if use_agent_diff:
+        for jsonl_path in _discover_run_files(run_ids, since):
+            events = _load_jsonl(jsonl_path)
+            if events:
+                sessions.append((jsonl_path.parent.name, events, False))
+    if use_claude:
+        for path in _discover_claude_files(since):
+            events = _load_claude_session(path)
+            if events:
+                sessions.append((path.stem, events, True))
+    return sessions
+
+
+def _pairs_from_events(
+    events: list[dict],
+    run_id: str,
+    cwd_filter: str | None,
+    window_turns: int,
+    has_output: bool,
+) -> list[EvalPair]:
+    """Walk one session's events and yield (query, gold) pairs, computing the
+    in-session follow-rate when the session captured tool output."""
+    pairs: list[EvalPair] = []
+    run_cwd = _get_run_cwd(events)
+    seen_queries: set[str] = set()
+    for idx, e in enumerate(events):
+        if e.get("event") != "tool_called":
+            continue
+        parsed = is_agmem_context_call(e)
+        if not parsed:
+            continue
+        query, tag = parsed
+        cmd = e.get("tool_input", {}).get("command", "")
+        base_cwd = e.get("cwd") or run_cwd
+        effective_cwd = _extract_cd_cwd(cmd, base_cwd)
+
+        if cwd_filter and effective_cwd != cwd_filter:
+            continue
+        if query in seen_queries:
+            continue
+        seen_queries.add(query)
+        if len(query) < 10:
+            continue
+
+        gold = extract_gold_files(events, idx, window_turns, effective_cwd)
+        if not gold:
+            continue
+
+        followed: bool | None = None
+        followed_soft: bool | None = None
+        n_refs = 0
+        if has_output:
+            out_text = e.get("_result", "") or ""
+            out_refs = _agmem_output_refs(out_text)
+            n_refs = len(out_refs)
+            followed = bool(gold & out_refs)
+            followed_soft = followed or any(Path(g).name in out_text for g in gold)
+
+        pairs.append(EvalPair(
+            run_id=run_id,
+            query=query,
+            cwd=effective_cwd,
+            turn=idx,
+            gold_files=gold,
+            window_size=window_turns,
+            tag=tag,
+            followed=followed,
+            followed_soft=followed_soft,
+            n_output_refs=n_refs,
+        ))
+    return pairs
+
+
 def extract_eval_pairs(
     run_ids: list[str] | None = None,
     since: str | None = None,
     cwd_filter: str | None = None,
     window_turns: int = 20,
+    source: str = "agent-diff",
 ) -> list[EvalPair]:
-    """Extract (query, gold_files) pairs from agent-diff session logs."""
+    """Extract (query, gold_files) pairs from recorded sessions.
+
+    ``source`` selects the log backend: ``agent-diff`` (default, back-compat),
+    ``claude`` (Claude Code native logs at ``~/.claude/projects``), or ``auto``
+    (Claude if present, else agent-diff). Claude sessions additionally populate
+    the per-pair ``followed`` / ``followed_soft`` fields.
+    """
     pairs: list[EvalPair] = []
-    run_files = _discover_run_files(run_ids, since)
-
-    for jsonl_path in run_files:
-        events = _load_jsonl(jsonl_path)
-        if not events:
-            continue
-        run_cwd = _get_run_cwd(events)
-        run_id = jsonl_path.parent.name
-
-        seen_queries: set[str] = set()
-        for idx, e in enumerate(events):
-            if e.get("event") != "tool_called":
-                continue
-            parsed = is_agmem_context_call(e)
-            if not parsed:
-                continue
-            query, tag = parsed
-            cmd = e.get("tool_input", {}).get("command", "")
-            effective_cwd = _extract_cd_cwd(cmd, run_cwd)
-
-            if cwd_filter and effective_cwd != cwd_filter:
-                continue
-
-            if query in seen_queries:
-                continue
-            seen_queries.add(query)
-
-            if len(query) < 10:
-                continue
-
-            gold = extract_gold_files(events, idx, window_turns, effective_cwd)
-            if not gold:
-                continue
-
-            pairs.append(EvalPair(
-                run_id=run_id,
-                query=query,
-                cwd=effective_cwd,
-                turn=idx,
-                gold_files=gold,
-                window_size=window_turns,
-                tag=tag,
-            ))
-
+    for run_id, events, has_output in _discover_sessions(run_ids, since, source):
+        pairs.extend(_pairs_from_events(events, run_id, cwd_filter, window_turns, has_output))
     return pairs
 
 
@@ -500,6 +717,7 @@ def run_eval(
     window_turns: int = 20,
     ks: list[int] | None = None,
     pairs: list[EvalPair] | None = None,
+    source: str = "agent-diff",
 ) -> EvalReport:
     """End-to-end eval: extract pairs (or use pre-loaded), score, produce report."""
     if ks is None:
@@ -508,6 +726,7 @@ def run_eval(
         pairs = extract_eval_pairs(
             run_ids=run_ids, since=since,
             cwd_filter=cwd_filter, window_turns=window_turns,
+            source=source,
         )
     scores = [score_pair(p, ks=ks) for p in pairs]
     return EvalReport(pairs=pairs, scores=scores, ks=ks)

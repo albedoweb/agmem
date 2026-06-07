@@ -604,6 +604,12 @@ def eval_agmem(
         None, "--cwd",
         help="Only score sessions whose repo root matches this path.",
     ),
+    source: str = typer.Option(
+        "auto", "--source",
+        help="Session log source: 'auto' (Claude native logs if present, else "
+             "agent-diff), 'claude' (~/.claude/projects), or 'agent-diff'. Claude "
+             "logs also yield the drift-free in-session follow rate.",
+    ),
     out: Optional[str] = typer.Option(
         None, "--out", "-o",
         help="Base path for CSV and JSON output files (e.g. --out eval-results/report).",
@@ -621,16 +627,21 @@ def eval_agmem(
     ),
     collect: Optional[str] = typer.Option(
         None, "--collect",
-        help="Extract pairs from agent-diff sessions and freeze to a JSON file, then exit "
+        help="Extract pairs from sessions and freeze to a JSON file, then exit "
              "(no scoring). Pass the filename, e.g. --collect .agmem/eval-pairs.json.",
     ),
     pairs_file: Optional[str] = typer.Option(
         None, "--pairs-file",
-        help="Score against a frozen pairs file instead of extracting from agent-diff. "
+        help="Score against a frozen pairs file instead of extracting from session logs. "
              "Use after --collect to track drift. E.g. --pairs-file .agmem/eval-pairs.json.",
     ),
 ):
-    """Evaluate agmem retrieval quality against real agent-diff session logs.
+    """Evaluate agmem retrieval quality against real Claude Code session logs.
+
+    Reads Claude native logs (~/.claude/projects) by default; pass
+    --source agent-diff for the legacy ~/.agent-diff/runs backend. Claude logs
+    additionally report a drift-free in-session follow rate: how often agmem's
+    actual output listed a file the agent then used.
 
     Two-phase workflow for drift tracking:
 
@@ -653,7 +664,9 @@ def eval_agmem(
 
     if collect:
         from pathlib import Path
-        pairs = extract_eval_pairs(since=since_val, cwd_filter=cwd_filter, window_turns=window)
+        pairs = extract_eval_pairs(
+            since=since_val, cwd_filter=cwd_filter, window_turns=window, source=source,
+        )
         collect_path = Path(collect)
         save_pairs(pairs, collect_path)
         typer.echo(f"Frozen {len(pairs)} pairs to {collect_path}")
@@ -669,6 +682,7 @@ def eval_agmem(
             cwd_filter=cwd_filter,
             window_turns=window,
             ks=ks,
+            source=source,
         )
 
     if json_only:
@@ -1082,33 +1096,59 @@ def update(
 
 @app.command()
 def watch(
+    paths: Optional[list[str]] = typer.Argument(
+        None,
+        help="Repo dirs to watch. Omit to use the watchlist "
+             "($XDG_CONFIG_HOME/agmem/watchlist, else ~/.config/agmem/watchlist), "
+             "or the current repo if the watchlist is empty.",
+    ),
     interval: int = typer.Option(
         600, "--interval", "-i",
         help="Polling interval in seconds (default: 600 = 10 min).",
     ),
+    no_hot_reload: bool = typer.Option(
+        False, "--no-hot-reload",
+        help="Read the watchlist once at startup instead of re-reading each cycle.",
+    ),
+    status: bool = typer.Option(
+        False, "--status",
+        help="Print the running watcher's heartbeat (pid, version, roots) and exit.",
+    ),
 ):
-    """Watch the repo for file changes and auto-reindex in batches.
+    """Watch one or more repos in a single process and auto-reindex in batches.
 
-    Polls the filesystem every ``--interval`` seconds. On each cycle, diffs
-    mtimes against the previous snapshot, enqueues changed/created/deleted
-    paths, and partial-reindexes via ``apply_paths()``.
+    Polls every ``--interval`` seconds. Per repo, diffs mtimes against the
+    previous snapshot, enqueues changed/created/deleted paths, and
+    partial-reindexes via ``apply_paths()``. Each repo keeps its own index +
+    queue.
 
-    Survives crashes: on startup, drains any leftover ``_watch_queue.jsonl``
-    from a prior session.
+    Repo set: positional PATHS, else the global watchlist (re-read each cycle so
+    repos can be added/removed without a restart), else the current repo.
 
+    Survives crashes: on startup, drains any leftover ``_watch_queue.jsonl``.
     To stop, press Ctrl-C.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    if status:
+        from .watch import read_status, status_path
+        st = read_status()
+        if not st:
+            typer.echo(f"No watcher status at {status_path()} (not running, or stopped cleanly).")
+            raise typer.Exit(code=1)
+        typer.echo(f"pid:        {st.get('pid')}")
+        typer.echo(f"version:    {st.get('version')}")
+        typer.echo(f"started:    {st.get('started_at')}")
+        typer.echo(f"last tick:  {st.get('last_tick')}")
+        typer.echo(f"interval:   {st.get('interval')}s")
+        typer.echo("roots:")
+        for r in st.get("roots", []):
+            typer.echo(f"  - {r}")
+        return
 
     if interval < 1:
         typer.echo("--interval must be >= 1 second.", err=True)
         raise typer.Exit(code=1)
 
-    run_watch(interval=interval)
+    run_watch(roots=(paths or None), interval=interval, hot_reload=not no_hot_reload)
 
 
 @app.command()

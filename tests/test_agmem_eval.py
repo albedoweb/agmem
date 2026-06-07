@@ -635,3 +635,144 @@ class TestPathNormalization:
 
     def test_gold_mentioned_in_text_no_match(self):
         assert _gold_mentioned_in_text("src/secret.py", "General utilities and helpers") is False
+
+
+# ---------------------------------------------------------------------------
+# Claude native-log source + drift-free follow-rate
+# ---------------------------------------------------------------------------
+
+def _claude_tooluse(tool_id, name, inp, cwd="/repo", ts="2026-05-22T20:51:00Z"):
+    return {
+        "type": "assistant", "timestamp": ts, "cwd": cwd,
+        "message": {"content": [{"type": "tool_use", "id": tool_id, "name": name, "input": inp}]},
+    }
+
+
+def _claude_result(tool_id, text, cwd="/repo", ts="2026-05-22T20:51:01Z"):
+    return {
+        "type": "user", "timestamp": ts, "cwd": cwd,
+        "message": {"content": [{"type": "tool_result", "tool_use_id": tool_id,
+                                  "content": [{"type": "text", "text": text}]}]},
+    }
+
+
+def _write_jsonl(fp: Path, events: list[dict]) -> Path:
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    with open(fp, "w") as f:
+        for e in events:
+            f.write(json.dumps(e) + "\n")
+    return fp
+
+
+class TestAgmemOutputRefs:
+    def test_ref_line_and_backtick_path(self):
+        from agmem.agmem_eval import _agmem_output_refs
+        refs = _agmem_output_refs("- File `src/x.py`\n  (index · ref: src/income.py · commit: ab)")
+        assert "src/income.py" in refs
+        assert "src/x.py" in refs
+
+    def test_strips_section_anchor(self):
+        from agmem.agmem_eval import _agmem_output_refs
+        assert "README.md" in _agmem_output_refs("ref: README.md#use-with-your-agent")
+
+    def test_ignores_prose_backticks(self):
+        from agmem.agmem_eval import _agmem_output_refs
+        assert _agmem_output_refs("run `agmem context` first") == set()
+
+    def test_strips_worktree_prefix(self):
+        from agmem.agmem_eval import _agmem_output_refs
+        assert "src/app.py" in _agmem_output_refs("ref: .claude/worktrees/b/src/app.py")
+
+    def test_empty(self):
+        from agmem.agmem_eval import _agmem_output_refs
+        assert _agmem_output_refs("") == set()
+
+
+class TestLoadClaudeSession:
+    def test_reshape_and_result_attach(self, tmp_path):
+        from agmem.agmem_eval import _load_claude_session
+        fp = _write_jsonl(tmp_path / "s.jsonl", [
+            _claude_tooluse("t1", "Bash", {"command": "agmem context 'x'"}),
+            _claude_result("t1", "ref: src/a.py"),
+            _claude_tooluse("t2", "Read", {"file_path": "/repo/src/a.py"}),
+        ])
+        evs = _load_claude_session(fp)
+        assert evs[0]["event"] == "run_started"
+        tool_evs = [e for e in evs if e.get("event") == "tool_called"]
+        assert len(tool_evs) == 2
+        assert tool_evs[0]["tool_name"] == "Bash"
+        assert tool_evs[0]["_result"] == "ref: src/a.py"
+        assert tool_evs[0]["cwd"] == "/repo"
+
+    def test_skips_bad_json_lines(self, tmp_path):
+        from agmem.agmem_eval import _load_claude_session
+        fp = tmp_path / "s.jsonl"
+        fp.write_text("not json\n" + json.dumps(
+            _claude_tooluse("t1", "Read", {"file_path": "/r/a.py"})) + "\n")
+        evs = _load_claude_session(fp)
+        assert any(e.get("tool_name") == "Read" for e in evs)
+
+
+class TestExtractEvalPairsClaude:
+    def test_native_extraction_with_follow_true(self, monkeypatch, tmp_path):
+        _write_jsonl(tmp_path / "-repo" / "sess.jsonl", [
+            _claude_tooluse("t1", "Bash", {"command": "agmem context 'find income cache path' -n 8 --session"}),
+            _claude_result("t1", "Top:\n- File `src/income.py`\n  (index · ref: src/income.py · commit: ab)"),
+            _claude_tooluse("t2", "Read", {"file_path": "/repo/src/income.py"}),
+            _claude_tooluse("t3", "Edit", {"file_path": "/repo/src/income.py", "old_string": "a", "new_string": "b"}),
+        ])
+        monkeypatch.setattr("agmem.agmem_eval.CLAUDE_PROJECTS_DIR", tmp_path)
+        pairs = extract_eval_pairs(source="claude")
+        assert len(pairs) == 1
+        p = pairs[0]
+        assert p.query == "find income cache path"
+        assert "src/income.py" in p.gold_files
+        assert p.followed is True
+        assert p.followed_soft is True
+        assert p.n_output_refs >= 1
+
+    def test_native_follow_false_when_output_misses(self, monkeypatch, tmp_path):
+        _write_jsonl(tmp_path / "-repo" / "sess.jsonl", [
+            _claude_tooluse("t1", "Bash", {"command": "agmem context 'find income cache path'"}),
+            _claude_result("t1", "- File `src/other.py`\n  (ref: src/other.py)"),
+            _claude_tooluse("t2", "Edit", {"file_path": "/repo/src/income.py", "old_string": "a", "new_string": "b"}),
+        ])
+        monkeypatch.setattr("agmem.agmem_eval.CLAUDE_PROJECTS_DIR", tmp_path)
+        pairs = extract_eval_pairs(source="claude")
+        assert len(pairs) == 1
+        assert pairs[0].followed is False
+        assert pairs[0].followed_soft is False
+
+    def test_auto_prefers_claude_when_present(self, monkeypatch, tmp_path):
+        cdir = tmp_path / "claude"
+        _write_jsonl(cdir / "-repo" / "s.jsonl", [
+            _claude_tooluse("t1", "Bash", {"command": "agmem context 'find income cache path'"}),
+            _claude_result("t1", "ref: src/income.py"),
+            _claude_tooluse("t2", "Read", {"file_path": "/repo/src/income.py"}),
+        ])
+        adir = tmp_path / "agentdiff"
+        adir.mkdir()
+        monkeypatch.setattr("agmem.agmem_eval.CLAUDE_PROJECTS_DIR", cdir)
+        monkeypatch.setattr("agmem.agmem_eval.AGENT_DIFF_RUNS_DIR", adir)
+        pairs = extract_eval_pairs(source="auto")
+        assert len(pairs) == 1
+        assert pairs[0].followed is True
+
+
+class TestFollowRateReport:
+    def test_follow_rate(self):
+        pairs = [
+            EvalPair(run_id="a", query="q1", cwd="/r", turn=0, gold_files={"f1"}, window_size=20, followed=True, followed_soft=True),
+            EvalPair(run_id="b", query="q2", cwd="/r", turn=0, gold_files={"f2"}, window_size=20, followed=False, followed_soft=True),
+        ]
+        scores = [EvalScore(pair=p, top_k=[], hit_at={5: False}, recall_at={5: 0.0}, mrr=0.0) for p in pairs]
+        rep = EvalReport(pairs=pairs, scores=scores, ks=[5])
+        assert rep.follow_rate() == (0.5, 2)
+        assert rep.follow_rate(soft=True) == (1.0, 2)
+
+    def test_follow_rate_none_when_unknown(self):
+        pair = EvalPair(run_id="a", query="q1", cwd="/r", turn=0, gold_files={"f1"}, window_size=20)
+        score = EvalScore(pair=pair, top_k=[], hit_at={5: False}, recall_at={5: 0.0}, mrr=0.0)
+        rep = EvalReport(pairs=[pair], scores=[score], ks=[5])
+        assert rep.follow_rate() is None
+        assert "Follow rate" not in "\n".join(rep.summary_lines())

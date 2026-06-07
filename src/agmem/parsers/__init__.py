@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from . import go, md, py, tf
+from . import go, md, py, tf, yaml
 from .config import ParserConfig, load
 from .types import Block, FileAnalysis, TfBlock
 
@@ -42,6 +42,9 @@ _BUILTIN: dict[str, _ParserModule] = {
     "md": md,
     "mdx": md,
     "go": go,
+    "yaml": yaml,
+    "yml": yaml,
+    "values": yaml,  # Helm value-override files (e.g. dev.values) — YAML content
 }
 
 

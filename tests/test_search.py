@@ -108,30 +108,31 @@ def test_manual_source_outranks_index_for_equivalent_text():
 
 
 def test_source_boost_can_be_overridden():
-    """Caller can pass a different ``source_boost`` dict to disable or invert
-    the manual preference — useful for tests / experiments."""
+    """Caller can pass a ``source_boost`` dict to enable / invert source
+    preference — useful for tests / experiments. (Since 2026-06-06 the default
+    is ``manual=1.0`` — sweep-driven; see search.py comment.)"""
     entries = [
         MemoryEntry(id="m", ts="t", text="alpha beta", source="manual"),
         MemoryEntry(id="i", ts="t", text="alpha beta", source="index"),
         *_noise_entries(5),
     ]
-    # Empty boost dict: manual and index get the same multiplier (1.0) →
-    # raw BM25 scores are identical → equal final scores.
-    res_no_boost = search("alpha beta", entries, top_n=2, source_boost={})
-    s_manual = next(s for e, s in res_no_boost if e.id == "m")
-    s_index = next(s for e, s in res_no_boost if e.id == "i")
-    assert abs(s_manual - s_index) < 1e-6
-
-    # Default boost: manual entry ~2× the index entry.
+    # Default boost (manual=1.0): raw BM25 scores are identical → equal finals.
     res_default = search("alpha beta", entries, top_n=2)
     s_manual_d = next(s for e, s in res_default if e.id == "m")
     s_index_d = next(s for e, s in res_default if e.id == "i")
-    assert s_manual_d == pytest.approx(s_index_d * 2.0)
+    assert abs(s_manual_d - s_index_d) < 1e-6
+
+    # Explicit override: manual entry exactly 2× the index entry.
+    res_boosted = search("alpha beta", entries, top_n=2, source_boost={"manual": 2.0})
+    s_manual_b = next(s for e, s in res_boosted if e.id == "m")
+    s_index_b = next(s for e, s in res_boosted if e.id == "i")
+    assert s_manual_b == pytest.approx(s_index_b * 2.0)
 
 
 def test_kind_and_source_boosts_compose():
-    """A manual rule should rank higher than an indexed rule, and a manual
-    fact higher than an indexed fact — boosts multiply, not replace."""
+    """Boosts multiply, not replace. Asserted with an explicit ``source_boost``
+    so the test exercises the composition mechanism independently of the
+    runtime default (which is 1.0 manual since 2026-06-06)."""
     entries = [
         MemoryEntry(id="ir", ts="t", text="alpha beta", source="index", kind="rule"),
         MemoryEntry(id="mr", ts="t", text="alpha beta", source="manual", kind="rule"),
@@ -139,7 +140,8 @@ def test_kind_and_source_boosts_compose():
         MemoryEntry(id="mf", ts="t", text="alpha beta", source="manual", kind="fact"),
         *_noise_entries(5),
     ]
-    results = search("alpha beta", entries, top_n=4)
+    # Explicit boosts so this test is independent of the runtime default.
+    results = search("alpha beta", entries, top_n=4, source_boost={"manual": 2.0})
     by_id = {e.id: s for e, s in results}
     # Manual rule: 4.0 (kind) × 2.0 (source) = 8.0× raw
     # Index rule:  4.0 (kind) × 1.0 = 4.0× raw

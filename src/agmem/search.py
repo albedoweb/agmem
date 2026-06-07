@@ -5,9 +5,11 @@ the markdown title (if present) are repeated in the BM25 corpus to give them
 a structural boost. This means a query that matches a filename or H1 title
 ranks above a long doc that merely mentions the same word in passing.
 
-After BM25 ranking, results are optionally reranked with Maximal Marginal
-Relevance (MMR) to surface diverse documents instead of clustering multiple
-sections of the same file. MMR is ON by default (``--no-mmr`` disables it).
+After BM25 ranking, results can be reranked with Maximal Marginal Relevance
+(MMR) to surface diverse documents instead of clustering multiple sections of
+the same file. MMR is OFF by default — it measured eval-neutral on the Track A
+golden set — but stays available behind the ``.agmem`` config (``mmr.enabled``);
+``--no-mmr`` force-disables it per query.
 """
 
 import re
@@ -52,11 +54,14 @@ STOP_WORDS: set[str] = {
 # because they're meta-instructions that should override the agent's default behavior.
 DEFAULT_KIND_BOOST: dict[str, float] = {"rule": 4.0, "pattern": 1.5}
 
-# Default source multipliers: user-curated entries (``agmem remember`` →
-# source="manual") get a 2× boost over auto-indexed file summaries. The
-# rationale: a human bothered to write the entry, so it usually answers a
-# question more directly than a generic file/dir summary.
-DEFAULT_SOURCE_BOOST: dict[str, float] = {"manual": 2.0}
+# Default source multipliers. Manual was 2× until 2026-06-06 — the intuition
+# was "a human bothered to write it, so it answers more directly." A sweep on
+# golden-set v3 killed that: manual entries appeared in top-K for 0 of 77 gold
+# pairs (they're facts, not files the agent then reads), so the boost was just
+# pulling them into top-5 slots they didn't deserve and displacing the actual
+# code/TF/.values files. Dropping to 1.0 lifted Hit@5 +6.5pp and Recall@5
+# +0.05 with no slice regression. Re-sweep before changing.
+DEFAULT_SOURCE_BOOST: dict[str, float] = {"manual": 1.0}
 
 # Splits on whitespace, punctuation, AND underscores so compound names like
 # `aws_s3_bucket` tokenize to ['aws', 's3', 'bucket'] and match queries like "s3 bucket".
@@ -72,7 +77,8 @@ _TITLE_WEIGHT = 2
 #   File `path` — Markdown doc — "Real Title", 5 sections. ...
 _TITLE_RE = re.compile(r'Markdown doc — "([^"]+)"')
 
-# MMR (Maximal Marginal Relevance) reranking defaults. ON by default.
+# MMR (Maximal Marginal Relevance) reranking defaults. OFF by default —
+# measured eval-neutral on the Track A golden set, kept available behind config.
 # λ=0.7 balances 70% relevance vs 30% diversity — the empirical sweet spot
 # in IR literature. pool_size=20 gives MMR enough candidates to swap in
 # for diversity without re-scoring the entire corpus.

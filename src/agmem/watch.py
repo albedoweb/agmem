@@ -1,10 +1,19 @@
-"""File-system watcher that keeps the agmem index fresh against active editing.
+"""File-system watcher that keeps agmem indexes fresh against active editing.
+
+One process watches any number of repos. Each repo is an independent
+``RepoWatcher`` (its own root, gitignore spec, mtime snapshot, ``.agmem`` index
+and ``_watch_queue.jsonl``); ``run_watch`` polls them all on a single loop.
 
 Design:
-- Append events to .agmem/_watch_queue.jsonl as they arrive (cheap, durable).
-- Every ``interval`` seconds (default 600), read the queue, dedupe by path,
-  call ``apply_paths()``, then atomically rename the queue to empty it.
-- On startup, replay any queue left from a prior crash before arming the watcher.
+- Append events to each repo's .agmem/_watch_queue.jsonl as they arrive.
+- Every ``interval`` seconds (default 600), per repo: diff mtimes, enqueue
+  changes, ``apply_paths()``, then atomically empty the queue.
+- On startup, replay any queue left from a prior crash before arming.
+- Repo list comes from positional args, else the global watchlist
+  (``$XDG_CONFIG_HOME/agmem/watchlist`` → ``~/.config/agmem/watchlist``), which
+  is re-read each cycle (hot-reload) so repos can be added/removed without a
+  restart. A heartbeat file (``watch.status.json``) records pid/version/roots.
+- Per-repo ticks are exception-isolated: one bad repo can't take down the rest.
 - Skips: .agmem/ itself, .git/, paths matching .gitignore.
 """
 
@@ -103,25 +112,125 @@ def apply_queue_once(cwd: str | None = None) -> dict:
     return result
 
 
-def run_watch(cwd: str | None = None, interval: int = 600) -> None:
-    """Run the watch loop until ctrl-C. Polling-based for portability.
+def _config_base() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "agmem"
 
-    On entry: drain any leftover queue from a prior session.
-    Then walk the tree every ``interval`` seconds, diff mtimes, and enqueue changes.
+
+def watchlist_path() -> Path:
+    return _config_base() / "watchlist"
+
+
+def status_path() -> Path:
+    return _config_base() / "watch.status.json"
+
+
+def read_watchlist() -> list[str]:
+    """Repo paths from the global watchlist: one per line, ``#`` comments and
+    blank lines ignored, ``~`` expanded. Missing file → empty list."""
+    p = watchlist_path()
+    if not p.exists():
+        return []
+    roots: list[str] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        roots.append(os.path.expanduser(line))
+    return roots
+
+
+def _agmem_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("agmem")
+    except Exception:
+        return "unknown"
+
+
+def write_status(roots: list[str], interval: int, started_at: str,
+                 last_tick: str | None) -> None:
+    """Heartbeat so 'is it running / is it stale?' is answerable without ps."""
+    sp = status_path()
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "pid": os.getpid(),
+        "version": _agmem_version(),
+        "started_at": started_at,
+        "last_tick": last_tick,
+        "interval": interval,
+        "roots": roots,
+    }
+    tmp = sp.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(sp)
+
+
+def read_status() -> dict | None:
+    sp = status_path()
+    if not sp.exists():
+        return None
+    try:
+        return json.loads(sp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def clear_status() -> None:
+    try:
+        status_path().unlink()
+    except OSError:
+        pass
+
+
+def _resolve_roots(given: list[str]) -> list[str]:
+    """Map each dir to its repo root (worktrees → main repo), dedupe, preserve
+    order. Pure — see ``_warn_nested_roots`` for the nesting warning."""
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for g in given:
+        try:
+            root = str(config.find_repo_root(g))
+        except Exception:
+            root = str(Path(g).expanduser().resolve())
+        if root not in seen:
+            seen.add(root)
+            resolved.append(root)
+    return resolved
+
+
+def _warn_nested_roots(roots: list[str], already_warned: set[tuple[str, str]]) -> None:
+    """Print a nested-root warning once per (inner, outer) pair. Subsequent
+    hot-reload cycles with the same nesting stay silent — `already_warned`
+    persists across calls so the log isn't flooded every ``interval`` seconds."""
+    for a in roots:
+        for b in roots:
+            if a != b and a.startswith(b.rstrip("/") + "/"):
+                key = (a, b)
+                if key not in already_warned:
+                    already_warned.add(key)
+                    print(f"[watch] WARNING: {a} is nested under {b}; the outer "
+                          f"watcher will also index {a}'s files into {b}'s index.")
+                break
+
+
+def _sleep_interruptible(seconds: float, still_running) -> None:
+    """Sleep ``seconds`` but re-check ``still_running()`` roughly once a second.
+
+    A bare ``time.sleep(interval)`` is the wrong primitive for a stoppable loop:
+    when a signal handler that doesn't raise (ours just flips a flag) fires, PEP
+    475 resumes the sleep for the *remaining* interval — so a 600s watcher would
+    take up to 600s to honor Ctrl-C/SIGTERM. Chunking caps shutdown latency at ~1s.
     """
-    root = config.find_repo_root(cwd)
-    spec = _load_gitignore(root)
+    remaining = float(seconds)
+    while still_running() and remaining > 0:
+        chunk = min(1.0, remaining)
+        time.sleep(chunk)
+        remaining -= chunk
 
-    # Replay pre-existing queue (crash recovery)
-    applied = apply_queue_once(cwd)
-    if applied.get("events", 0) > 0:
-        print(f"[watch] Applied {applied['events']} queued events: "
-              f"upserted={applied['upserted']}, removed={applied['removed']}")
 
-    print(f"[watch] Watching {root} (polling every {interval}s). Ctrl-C to stop.")
-
-    # Build initial mtime snapshot
-    mtime_map: dict[str, float] = {}
+def _scan_tree(root: Path, spec) -> dict[str, float]:
+    out: dict[str, float] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for fname in filenames:
@@ -129,9 +238,112 @@ def run_watch(cwd: str | None = None, interval: int = 600) -> None:
             if not _is_watchable(full, root, spec):
                 continue
             try:
-                mtime_map[str(full)] = full.stat().st_mtime
+                out[str(full)] = full.stat().st_mtime
             except OSError:
                 pass
+    return out
+
+
+class RepoWatcher:
+    """Per-repo watch state. All index/queue writes route through the cwd-keyed
+    helpers, so each repo stays isolated (own ``.agmem`` index + queue)."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+        self.root = config.find_repo_root(cwd)
+        self.spec = _load_gitignore(self.root)
+        self.mtime_map: dict[str, float] = {}
+
+    def bootstrap(self) -> dict:
+        """Replay any leftover queue (crash recovery), then snapshot mtimes."""
+        applied = apply_queue_once(self.cwd)
+        self.mtime_map = _scan_tree(self.root, self.spec)
+        return applied
+
+    def tick(self) -> dict:
+        """One poll cycle: diff mtimes against the snapshot, enqueue, apply."""
+        current = _scan_tree(self.root, self.spec)
+        old = set(self.mtime_map)
+        cur = set(current)
+        for abs_path in cur - old:
+            rel = _repo_rel(Path(abs_path), self.root)
+            if rel:
+                enqueue(self.cwd, rel, "created")
+        for abs_path in old - cur:
+            rel = _repo_rel(Path(abs_path), self.root)
+            if rel:
+                enqueue(self.cwd, rel, "deleted")
+        for abs_path in cur & old:
+            if current[abs_path] != self.mtime_map[abs_path]:
+                rel = _repo_rel(Path(abs_path), self.root)
+                if rel:
+                    enqueue(self.cwd, rel, "modified")
+        self.mtime_map = current
+        return apply_queue_once(self.cwd)
+
+
+def _build_watcher(root: str) -> RepoWatcher | None:
+    """Bootstrap a RepoWatcher, or return None (with a reason) if the repo
+    isn't usable — never auto-initializes a repo that lacks ``.agmem``."""
+    if not config.agmem_dir(root).exists():
+        print(f"[watch] skip {root}: not initialized (run `agmem init` there).")
+        return None
+    try:
+        watcher = RepoWatcher(root)
+        applied = watcher.bootstrap()
+        if applied.get("events", 0) > 0:
+            print(f"[watch] {root}: replayed {applied['events']} queued events.")
+        return watcher
+    except Exception as exc:  # noqa: BLE001 — one bad repo must not abort startup
+        print(f"[watch] skip {root}: bootstrap failed ({exc}).")
+        return None
+
+
+def run_watch(
+    roots: list[str] | str | None = None,
+    interval: int = 600,
+    cwd: str | None = None,
+    hot_reload: bool = True,
+) -> None:
+    """Watch one or more repos in a single process until Ctrl-C.
+
+    ``roots`` (a path or list) or legacy ``cwd`` pins an explicit set. If neither
+    is given, the global watchlist is used and — when ``hot_reload`` — re-read
+    each cycle so repos can be added/removed without a restart. Falls back to the
+    current repo when the watchlist is empty.
+    """
+    explicit = roots is not None or cwd is not None
+
+    def desired_roots() -> list[str]:
+        if roots is not None:
+            given = [roots] if isinstance(roots, str) else list(roots)
+        elif cwd is not None:
+            given = [cwd]
+        else:
+            given = read_watchlist() or [str(config.find_repo_root(None))]
+        return _resolve_roots(given)
+
+    watchers: dict[str, RepoWatcher] = {}
+    for root in desired_roots():
+        watcher = _build_watcher(root)
+        if watcher is not None:
+            watchers[root] = watcher
+
+    if not watchers:
+        print("[watch] No watchable repos. Add paths to "
+              f"{watchlist_path()} or run from an initialized repo.")
+        return
+
+    started_at = _utc_iso_now()
+    write_status(list(watchers), interval, started_at, None)
+    where = "args" if explicit else f"watchlist ({watchlist_path()})"
+    print(f"[watch] Watching {len(watchers)} repo(s) from {where}, "
+          f"polling every {interval}s. Ctrl-C to stop.")
+    for root in watchers:
+        print(f"          - {root}")
+
+    warned_nested: set[tuple[str, str]] = set()
+    _warn_nested_roots(list(watchers), warned_nested)
 
     running = True
 
@@ -145,51 +357,43 @@ def run_watch(cwd: str | None = None, interval: int = 600) -> None:
 
     try:
         while running:
-            time.sleep(interval)
+            _sleep_interruptible(interval, lambda: running)
             if not running:
                 break
 
-            current: dict[str, float] = {}
-            for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-                for fname in filenames:
-                    full = Path(dirpath) / fname
-                    if not _is_watchable(full, root, spec):
-                        continue
-                    try:
-                        current[str(full)] = full.stat().st_mtime
-                    except OSError:
-                        pass
+            if hot_reload and not explicit:
+                desired = desired_roots()
+                desired_set = set(desired)
+                for root in desired:
+                    if root not in watchers:
+                        watcher = _build_watcher(root)
+                        if watcher is not None:
+                            watchers[root] = watcher
+                            print(f"[watch] + added {root}")
+                for root in list(watchers):
+                    if root not in desired_set:
+                        del watchers[root]
+                        print(f"[watch] - dropped {root}")
+                _warn_nested_roots(list(watchers), warned_nested)
 
-            rel_root = str(root)
-            old_paths = set(mtime_map.keys())
-            cur_paths = set(current.keys())
+            for root, watcher in list(watchers.items()):
+                try:
+                    result = watcher.tick()
+                    if result.get("events", 0) > 0:
+                        print(f"[watch] {root}: flushed {result['events']} events "
+                              f"(upserted={result['upserted']}, removed={result['removed']}).")
+                except Exception as exc:  # noqa: BLE001 — isolate per-repo failures
+                    print(f"[watch] {root}: tick error ({exc}); continuing.")
 
-            for abs_path in cur_paths - old_paths:
-                rel = _repo_rel(Path(abs_path), root)
-                if rel:
-                    enqueue(cwd, rel, "created")
-            for abs_path in old_paths - cur_paths:
-                rel = _repo_rel(Path(abs_path), root)
-                if rel:
-                    enqueue(cwd, rel, "deleted")
-            for abs_path in cur_paths & old_paths:
-                if current[abs_path] != mtime_map[abs_path]:
-                    rel = _repo_rel(Path(abs_path), root)
-                    if rel:
-                        enqueue(cwd, rel, "modified")
-
-            mtime_map = current
-
-            result = apply_queue_once(cwd)
-            if result.get("events", 0) > 0:
-                print(f"[watch] Flushed {result['events']} events: "
-                      f"upserted={result['upserted']}, removed={result['removed']}")
+            write_status(list(watchers), interval, started_at, _utc_iso_now())
 
     finally:
-        # Final drain on exit
-        result = apply_queue_once(cwd)
-        if result.get("events", 0) > 0:
-            print(f"[watch] Final flush: {result['events']} events: "
-                  f"upserted={result['upserted']}, removed={result['removed']}")
+        for root, watcher in list(watchers.items()):
+            try:
+                result = apply_queue_once(watcher.cwd)
+                if result.get("events", 0) > 0:
+                    print(f"[watch] {root}: final flush {result['events']} events.")
+            except Exception:  # noqa: BLE001
+                pass
+        clear_status()
         print("[watch] Done.")
