@@ -148,3 +148,118 @@ def test_kind_and_source_boosts_compose():
     # Manual fact: 1.0 × 2.0 = 2.0× raw
     # Index fact:  1.0 × 1.0 = 1.0× raw
     assert by_id["mr"] > by_id["ir"] > by_id["mf"] > by_id["if"]
+
+
+# --- Doc-field weighting ([1b] enrich-index) ---
+
+class TestDocFieldWeighting:
+    def test_build_corpus_text_extracts_and_repeats_docs(self):
+        from agmem.search import _build_corpus_text, _DOC_WEIGHT
+        from agmem.store import MemoryEntry
+        e = MemoryEntry(
+            id="x", ts="t",
+            text=(
+                "File `src/income.py` — Python file with 1 function. "
+                "Items: function precompute_income.\nDocs: Pre-warm income cache on refresh"
+            ),
+            source_ref="src/income.py", source="index",
+        )
+        corpus = _build_corpus_text(e)
+        # Docs text should appear (_DOC_WEIGHT + 1) times: once in entry.text + N repeated.
+        assert corpus.count("Pre-warm income cache on refresh") == 1 + _DOC_WEIGHT
+
+    def test_no_docs_segment_means_no_extra_weighting(self):
+        from agmem.search import _build_corpus_text
+        from agmem.store import MemoryEntry
+        e = MemoryEntry(
+            id="x", ts="t",
+            text="File `src/bare.py` — Python file with 1 function. Items: function bare.",
+            source_ref="src/bare.py", source="index",
+        )
+        # No "\nDocs: " segment → _DOCS_RE doesn't match → no extra weighting.
+        corpus = _build_corpus_text(e)
+        assert "Docs:" not in corpus
+
+    def test_doc_match_outranks_name_only(self):
+        """Doc field gives an intent-matching entry the lift it needs to beat
+        a name-only match. Uses noise filler so BM25 IDF doesn't degenerate in
+        a tiny 2-doc corpus."""
+        from agmem.store import MemoryEntry
+        gold = MemoryEntry(
+            id="gold", ts="t",
+            text=(
+                "File `src/income.py` — Python file with 1 function. "
+                "Items: function precompute_income.\nDocs: Pre-warm income cache on refresh webhook"
+            ),
+            source_ref="src/income.py", source="index",
+        )
+        rival = MemoryEntry(
+            id="rival", ts="t",
+            text=(
+                "File `src/warmer.py` — Python file with 1 function. "
+                "Items: function warm."
+            ),
+            source_ref="src/warmer.py", source="index",
+        )
+        entries = [gold, rival, *_noise_entries(10)]
+        results = search("pre-warm income cache webhook refresh", entries, top_n=2)
+        order = [e.id for e, _ in results]
+        assert order[0] == "gold", f"expected docstring match to rank first, got {order}"
+
+
+# --- Conservative stemming ([1c]) ---
+
+class TestStem:
+    """Conservative morphological folding — high precision, low recall stemmer."""
+    def test_short_tokens_unchanged(self):
+        from agmem.search import _stem
+        assert _stem("aws") == "aws"        # don't break uppercase-ish identifiers
+        assert _stem("api") == "api"
+        assert _stem("rds") == "rds"
+        assert _stem("fed") == "fed"        # too short to strip -ed
+
+    def test_plural_simple_s(self):
+        from agmem.search import _stem
+        assert _stem("handlers") == "handler"
+        assert _stem("tasks") == "task"
+        assert _stem("routes") == "route"
+
+    def test_plural_ies(self):
+        from agmem.search import _stem
+        assert _stem("categories") == "category"
+        assert _stem("policies") == "policy"
+
+    def test_plural_es_after_sxz(self):
+        from agmem.search import _stem
+        assert _stem("classes") == "class"
+        assert _stem("boxes") == "box"
+        assert _stem("buzzes") == "buzz"
+
+    def test_false_plural_endings_preserved(self):
+        from agmem.search import _stem
+        assert _stem("address") == "address"   # ends "ss"
+        assert _stem("status") == "status"     # ends "us"
+        assert _stem("basis") == "basis"       # ends "is"
+
+    def test_ing_simple(self):
+        from agmem.search import _stem
+        assert _stem("syncing") == "sync"
+        assert _stem("handling") == "handl"   # imperfect but matches "handle" tokens after stem
+
+    def test_ing_double_consonant(self):
+        from agmem.search import _stem
+        assert _stem("running") == "run"
+        assert _stem("stopping") == "stop"
+
+    def test_ed_simple(self):
+        from agmem.search import _stem
+        assert _stem("synced") == "sync"
+        assert _stem("invalidated") == "invalidat"  # stems both query+index the same way
+
+    def test_query_corpus_alignment(self):
+        """The point of stemming: query 'syncing' should hit a doc containing 'sync'
+        after both are tokenized."""
+        from agmem.search import _tokenize, _STEMMING_ENABLED
+        assert _STEMMING_ENABLED
+        assert "sync" in _tokenize("the syncing logic")
+        assert "sync" in _tokenize("Use sync to update")

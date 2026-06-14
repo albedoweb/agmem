@@ -181,3 +181,60 @@ def test_analyze_file_routes_go_extension():
     fa = analyze_file("internal/x/y.go", "package x\nfunc Z() {}\n")
     assert fa is not None
     assert fa.ext == "go"
+
+
+# --- Godoc extraction ([1b] enrich-index) ---
+
+class TestGoGodoc:
+    def test_godoc_on_function(self):
+        from agmem.parsers.go import analyze
+        src = (
+            "package foo\n"
+            "\n"
+            "// Add returns the sum of two integers.\n"
+            "func Add(a, b int) int { return a + b }\n"
+        )
+        blocks = [b for b in analyze(src) if b.block_type == "function"]
+        assert blocks and blocks[0].name == "Add"
+        assert blocks[0].doc == "Add returns the sum of two integers."
+
+    def test_multi_line_godoc_concatenated(self):
+        from agmem.parsers.go import analyze
+        src = (
+            "// Handler serves the HTTP request.\n"
+            "// Returns 200 on success, 4xx on validation errors.\n"
+            "func Handler() {}\n"
+        )
+        blocks = [b for b in analyze(src) if b.block_type == "function"]
+        assert blocks[0].doc.startswith("Handler serves the HTTP request.")
+        assert "200 on success" in blocks[0].doc
+
+    def test_godoc_on_struct_and_method(self):
+        from agmem.parsers.go import analyze
+        src = (
+            "// Server is the public HTTP entry point.\n"
+            "type Server struct{ port int }\n"
+            "\n"
+            "// Start binds the listener and serves forever.\n"
+            "func (s *Server) Start() error { return nil }\n"
+        )
+        by_kind = {b.block_type: b for b in analyze(src)}
+        assert by_kind["struct"].doc == "Server is the public HTTP entry point."
+        assert by_kind["method"].doc == "Start binds the listener and serves forever."
+
+    def test_no_godoc_when_separated_by_blank_line(self):
+        from agmem.parsers.go import analyze
+        src = (
+            "// Stale comment, doesn't belong to Add.\n"
+            "\n"
+            "func Add() {}\n"
+        )
+        blocks = [b for b in analyze(src) if b.block_type == "function"]
+        assert blocks[0].doc == ""
+
+    def test_godoc_capped_at_80_chars(self):
+        from agmem.parsers.go import analyze
+        long = "// " + "a" * 200 + "\n"
+        src = long + "func Foo() {}\n"
+        blocks = [b for b in analyze(src) if b.block_type == "function"]
+        assert len(blocks[0].doc) <= 80

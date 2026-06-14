@@ -25,6 +25,30 @@ _GO_TYPE_STRUCT = re.compile(r"^\s*type\s+(\w+)\s+struct\b")
 _GO_TYPE_INTERFACE = re.compile(r"^\s*type\s+(\w+)\s+interface\b")
 _GO_FUNC_METHOD = re.compile(r"^\s*func\s+\(\s*\w+\s+\*?(\w+)\s*\)\s+(\w+)\s*\(")
 _GO_FUNC = re.compile(r"^\s*func\s+(\w+)\s*\(")
+_DOC_MAX_CHARS = 80
+
+
+def _prev_godoc(lines: list[str], end_idx: int) -> str:
+    """Walk backward from end_idx-1 through ``//`` comment lines and return the
+    first sentence concatenated, max 80 chars. Stops at the first non-comment
+    line (typically the previous declaration or a blank line).
+
+    Godoc convention: doc comments are the contiguous ``//`` lines immediately
+    above a declaration, with no blank line between.
+    """
+    parts: list[str] = []
+    for j in range(end_idx - 1, -1, -1):
+        s = lines[j].strip()
+        if not s:                                # blank line breaks the godoc block
+            break
+        if s.startswith("//"):
+            parts.append(s.lstrip("/").strip())
+        else:
+            break
+    if not parts:
+        return ""
+    parts.reverse()
+    return " ".join(parts)[:_DOC_MAX_CHARS]
 # Match `router.Get("/path",`, `router.POST("/x"`, `mux.HandleFunc("/y"`, etc.
 # Method name is captured case-sensitively (so `Get`, `GET`, `Handle` all match).
 _GO_ROUTE = re.compile(
@@ -36,8 +60,9 @@ _GO_ROUTE = re.compile(
 
 def analyze(content: str) -> list[Block]:
     blocks: list[Block] = []
+    lines = content.splitlines()
 
-    for line in content.splitlines():
+    for i, line in enumerate(lines):
         pkg = _GO_PACKAGE.match(line)
         if pkg:
             blocks.append(Block(block_type="package", name=pkg.group(1)))
@@ -45,12 +70,20 @@ def analyze(content: str) -> list[Block]:
 
         struct_match = _GO_TYPE_STRUCT.match(line)
         if struct_match:
-            blocks.append(Block(block_type="struct", name=struct_match.group(1)))
+            blocks.append(Block(
+                block_type="struct",
+                name=struct_match.group(1),
+                doc=_prev_godoc(lines, i),
+            ))
             continue
 
         iface_match = _GO_TYPE_INTERFACE.match(line)
         if iface_match:
-            blocks.append(Block(block_type="interface", name=iface_match.group(1)))
+            blocks.append(Block(
+                block_type="interface",
+                name=iface_match.group(1),
+                doc=_prev_godoc(lines, i),
+            ))
             continue
 
         # Method has priority over function — the receiver paren group
@@ -63,12 +96,17 @@ def analyze(content: str) -> list[Block]:
                 block_type="method",
                 name=method_name,
                 labels=[receiver_type],
+                doc=_prev_godoc(lines, i),
             ))
             continue
 
         func_match = _GO_FUNC.match(line)
         if func_match:
-            blocks.append(Block(block_type="function", name=func_match.group(1)))
+            blocks.append(Block(
+                block_type="function",
+                name=func_match.group(1),
+                doc=_prev_godoc(lines, i),
+            ))
             continue
 
         # Route — search anywhere on the line (chained builders are common

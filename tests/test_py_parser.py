@@ -175,3 +175,61 @@ def helper():
 
 def test_analyze_file_python_empty_returns_none():
     assert analyze_file("empty.py", "x = 1\n# nothing top-level\n") is None
+
+
+# --- Docstring extraction ([1b] enrich-index) ---
+
+class TestPyDocstrings:
+    def test_single_line_docstring_on_function(self):
+        from agmem.parsers.py import analyze
+        src = 'def foo():\n    """Pre-warm the income cache on refresh-webhook completion."""\n    return 1\n'
+        blocks = analyze(src)
+        assert len(blocks) == 1
+        assert blocks[0].name == "foo"
+        assert blocks[0].doc == "Pre-warm the income cache on refresh-webhook completion."
+
+    def test_multi_line_docstring_takes_summary_line(self):
+        from agmem.parsers.py import analyze
+        src = (
+            'class Greeter:\n'
+            '    """Send greetings to authenticated users.\n'
+            '\n'
+            '    Long body about how it works that we don\'t want indexed.\n'
+            '    """\n'
+            '    pass\n'
+        )
+        blocks = analyze(src)
+        assert blocks[0].block_type == "class"
+        assert blocks[0].name == "Greeter"
+        assert blocks[0].doc == "Send greetings to authenticated users."
+
+    def test_no_docstring_is_empty_string(self):
+        from agmem.parsers.py import analyze
+        src = "def bare():\n    return 42\n"
+        blocks = analyze(src)
+        assert blocks[0].doc == ""
+
+    def test_route_carries_docstring(self):
+        from agmem.parsers.py import analyze
+        src = (
+            '@router.post("/v1/users/{user_id}/income")\n'
+            'async def get_income(user_id: str):\n'
+            '    """Return the precomputed income summary for a user."""\n'
+            '    ...\n'
+        )
+        blocks = analyze(src)
+        assert blocks[0].block_type == "route"
+        assert blocks[0].doc == "Return the precomputed income summary for a user."
+
+    def test_docstring_with_triple_single_quotes(self):
+        from agmem.parsers.py import analyze
+        src = "def foo():\n    '''Single-quoted doc.'''\n    return 1\n"
+        blocks = analyze(src)
+        assert blocks[0].doc == "Single-quoted doc."
+
+    def test_docstring_capped_at_80_chars(self):
+        from agmem.parsers.py import analyze
+        long = "a" * 200
+        src = f'def foo():\n    """{long}"""\n    return 1\n'
+        blocks = analyze(src)
+        assert len(blocks[0].doc) <= 80

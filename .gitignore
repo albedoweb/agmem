@@ -9,3 +9,7 @@ __pycache__/
 # A/B experiment artifacts produced by scripts/exp/*.
 agmem-experiments/
 internal-docs/
+
+# Local agmem state (memories, indexes, golden-set archives) — never push.
+.agmem/
+.DS_Store

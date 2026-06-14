@@ -57,6 +57,7 @@ class PerQuestionResult:
 class LongMemEvalReport:
     results: list[PerQuestionResult]
     top_k_values: list[int]
+    mode_label: str = "BM25-only"
 
     @property
     def n_questions(self) -> int:
@@ -102,7 +103,7 @@ class LongMemEvalReport:
 
     def summary(self) -> str:
         lines = [
-            "LongMemEval-S — agmem BM25-only",
+            f"LongMemEval-S — agmem ({self.mode_label})",
             "=" * 60,
             f"Questions: {self.n_questions}",
             f"Date:      {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
@@ -209,10 +210,18 @@ def _ndcg_at(ranked_ids: list[str], gold_ids: set[str], k: int) -> float:
 def _run_single_question(
     question: dict,
     top_k_values: list[int],
+    hybrid_alpha: float = 0.0,
+    embedder=None,
+    rerank_top_k: int = 0,
+    reranker=None,
 ) -> PerQuestionResult:
     entries = question_to_corpus(question)
     max_k = max(top_k_values)
-    ranked = search(question["question"], entries, top_n=max_k)
+    ranked = search(
+        question["question"], entries, top_n=max_k,
+        hybrid_alpha=hybrid_alpha, embedder=embedder,
+        rerank_top_k=rerank_top_k, reranker=reranker,
+    )
     ranked_ids = [e.id for e, _ in ranked]
     gold = set(question.get("answer_session_ids", []))
     n_gold = len(gold)
@@ -248,6 +257,10 @@ def run_longmemeval(
     top_k_values: list[int] | None = None,
     cache_dir: Path | None = None,
     limit: int | None = None,
+    hybrid_alpha: float = 0.0,
+    rerank_top_k: int = 0,
+    rerank_model: str | None = None,
+    embed_cache_dir: Path | None = None,
 ) -> LongMemEvalReport:
     if top_k_values is None:
         top_k_values = [3, 5, 10, 20]
@@ -256,23 +269,48 @@ def run_longmemeval(
     if limit is not None:
         questions = questions[:limit]
 
+    embedder = None
+    reranker = None
+    mode_label = "BM25-only"
+    if hybrid_alpha > 0.0:
+        from agmem.embeddings import Embedder, is_available
+        if not is_available():
+            raise SystemExit(
+                "Hybrid retrieval requested but sentence-transformers/numpy not installed.\n"
+                "  Install with: pip install 'agmem[hybrid]'"
+            )
+        ec_dir = embed_cache_dir or (Path(__file__).resolve().parent / "cache" / "embeddings")
+        embedder = Embedder(cache_dir=ec_dir)
+        mode_label = f"hybrid α={hybrid_alpha}"
+    if rerank_top_k > 0:
+        from agmem.embeddings import Reranker, is_available
+        if not is_available():
+            raise SystemExit("Reranker requested but hybrid extras not installed.")
+        reranker = Reranker(model_name=rerank_model) if rerank_model else Reranker()
+        mode_label += f" + rerank top-{rerank_top_k}"
+
     results: list[PerQuestionResult] = []
     t0 = time.monotonic()
     for i, q in enumerate(questions):
-        r = _run_single_question(q, top_k_values)
+        r = _run_single_question(
+            q, top_k_values,
+            hybrid_alpha=hybrid_alpha, embedder=embedder,
+            rerank_top_k=rerank_top_k, reranker=reranker,
+        )
         results.append(r)
         elapsed = time.monotonic() - t0
         if (i + 1) % 50 == 0 or i == 0:
             print(f"  [{i + 1}/{len(questions)}]  {(i + 1) / elapsed:.1f} q/s  "
                   f"R@5(strict)={statistics.mean(r2.recall_strict_at.get(5, 0.0) for r2 in results):.1%}  "
-                  f"latest: {r.question_id}  type={r.question_type}")
+                  f"latest: {r.question_id}  mode={mode_label}")
 
     total = time.monotonic() - t0
-    print(f"\nDone in {total:.1f}s ({len(questions) / total:.1f} q/s)")
+    print(f"\nDone in {total:.1f}s ({len(questions) / total:.1f} q/s)  mode={mode_label}")
 
     return LongMemEvalReport(
         results=results,
         top_k_values=top_k_values,
+        mode_label=mode_label,
     )
 
 
@@ -282,10 +320,21 @@ if __name__ == "__main__":
     p.add_argument("--top-k", default="3,5,10,20", help="K values for recall@K")
     p.add_argument("--out", default=None, help="Base path for CSV/JSON output")
     p.add_argument("--limit", type=int, default=None, help="Max questions to evaluate")
+    p.add_argument("--hybrid-alpha", type=float, default=0.0,
+                   help="Hybrid retrieval weight (0=BM25-only; 0.3 matches shipped repo default)")
+    p.add_argument("--rerank-top-k", type=int, default=0,
+                   help="Cross-encoder rerank the top-N pool (0=off; opt-in feature)")
+    p.add_argument("--rerank-model", default=None,
+                   help="Cross-encoder model name (default: ms-marco-MiniLM-L-12-v2)")
     args = p.parse_args()
 
     ks = [int(x.strip()) for x in args.top_k.split(",")]
-    report = run_longmemeval(top_k_values=ks, limit=args.limit)
+    report = run_longmemeval(
+        top_k_values=ks, limit=args.limit,
+        hybrid_alpha=args.hybrid_alpha,
+        rerank_top_k=args.rerank_top_k,
+        rerank_model=args.rerank_model,
+    )
 
     print()
     print(report.summary())

@@ -263,6 +263,21 @@ def context(
         help="MMR relevance-vs-diversity trade-off (0.0–1.0, default 0.7). "
              "Higher = more relevance, less diversity.",
     ),
+    hybrid_alpha: Optional[float] = typer.Option(
+        None, "--hybrid-alpha",
+        help="Fuse dense embeddings into ranking. 0.0=pure BM25 (default), "
+             "1.0=pure dense, in-between blends. Requires the `hybrid` extras "
+             "(`pip install agmem[hybrid]`). Reads from `.agmem/config [hybrid]` "
+             "section if unset.",
+    ),
+    rerank_top_k: Optional[int] = typer.Option(
+        None, "--rerank-top-k",
+        help="Cross-encoder rerank the top-K candidates after BM25+hybrid. "
+             "0 = off (default). 20 is a common pick — more accurate ranking "
+             "for the top, modest latency hit (~100-500 ms / query on CPU). "
+             "Requires the `hybrid` extras. Reads from `.agmem/config [rerank]` "
+             "section if unset.",
+    ),
 ):
     """Generate agent-oriented context for a task.
 
@@ -322,7 +337,8 @@ def context(
         return
 
     results = search_filtered(task, limit=n, tag=tag,
-                              mmr_enabled=mmr_on, mmr_lambda=mmr_lam)
+                              mmr_enabled=mmr_on, mmr_lambda=mmr_lam,
+                              hybrid_alpha=hybrid_alpha, rerank_top_k=rerank_top_k)
     output = render_context(task, results, json_mode=json_mode)
     typer.echo(output)
 
@@ -660,7 +676,7 @@ def eval_agmem(
         raise typer.Exit(code=1)
 
     since_val = since if since else None
-    ks = [3, 5, 10, 20]
+    ks = [3, 5, 8, 10, 20]
 
     if collect:
         from pathlib import Path
@@ -711,9 +727,12 @@ def eval_agmem_sweep(
              "source_ref_weight, basename_weight, title_weight, b.",
     ),
     metric: str = typer.Option(
-        "hit_at_5", "--metric",
-        help="Metric to optimize: hit_at_3, hit_at_5, hit_at_10, hit_at_20, "
-             "recall_at_5, mrr.",
+        "hit_at_5_strict", "--metric",
+        help="Metric to optimize. Strict (default) — top-K source_ref ∩ gold; "
+             "the honest signal. Drop the '_strict' suffix to optimize the +soft "
+             "variant (path-match OR gold basename mentioned in entry text). "
+             "Choices: hit_at_3, hit_at_5, hit_at_10, hit_at_20, recall_at_5, "
+             "mrr (and each with '_strict' suffix; strict is the default).",
     ),
     since: Optional[str] = typer.Option(
         "30d", "--since",
@@ -859,6 +878,23 @@ def index(
     suffix = f" (replaced {removed} old index entries)" if removed else ""
     scope_note = f" [scope: {scope}]" if scope else ""
     typer.echo(f"Indexed {files} files → {added} memories{scope_note}{suffix}")
+
+    # Compact the embedding cache against the now-current entry hashes so it
+    # doesn't accumulate orphan rows from replaced/deleted files. Only acts if
+    # hybrid extras are installed AND a cache exists at this cwd.
+    try:
+        from .embeddings import Embedder, _content_hash, is_available
+        from .store import read_all_entries
+        from .config import agmem_dir
+        cache_dir = agmem_dir(path) / "embeddings"
+        if is_available() and (cache_dir / "vectors.npy").exists():
+            embedder = Embedder(cache_dir=cache_dir)
+            active = {_content_hash(e.text) for e in read_all_entries(path)}
+            dropped = embedder.compact(active)
+            if dropped:
+                typer.echo(f"Compacted embedding cache: dropped {dropped} orphan vectors.")
+    except Exception as exc:        # noqa: BLE001 — never let cache hygiene block indexing
+        typer.echo(f"(skipped embedding compact: {exc})", err=True)
 
 
 @app.command(name="suggest-aliases")

@@ -30,6 +30,16 @@ dependencies = [
     "pathspec>=0.12",
 ]
 
+# Optional hybrid (BM25 + dense) retrieval. Install with:
+#   uv tool install agmem --with sentence-transformers --with numpy
+# or:
+#   pip install agmem[hybrid]
+[project.optional-dependencies]
+hybrid = [
+    "sentence-transformers>=3.0",
+    "numpy>=1.26",
+]
+
 [project.scripts]
 agmem = "agmem.cli:app"
 

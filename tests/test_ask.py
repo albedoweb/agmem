@@ -256,15 +256,30 @@ def test_run_ask_demotes_already_seen_on_followup(repo: Path):
         'Section "Kraken Framework" of `services/crawler.md`. Kraken: Portal -> Datasource -> Parser pattern for crawlers.',
         source_ref="services/crawler.md#kraken-framework", kind="fact",
     ))
-    # First ask surfaces overview; followup should NOT return overview again at #1.
+    # Noise filler so BM25 IDF for "crawler" is positive (with only the three
+    # entries above, "crawler" appears in every doc → IDF ≤ 0 → demotion can't
+    # exercise its multiplier on a positive score). See `_rerank_for_session`'s
+    # `score <= 0` guard — added 2026-06-13.
+    for i in range(15):
+        append_entry(create_entry(
+            f"Unrelated noise content {i} about billing or other systems.",
+            source_ref=f"noise/file_{i}.md", kind="fact",
+        ))
+    # First ask surfaces the top-relevant entry. The followup should *demote
+    # its score* — verify by score comparison rather than rank position
+    # (rank order also depends on relative BM25 magnitudes, which shift with
+    # tokenizer changes like stemming).
     first = run_ask("crawler", top_n=1)
     assert first.top
-    seen_ref_first = first.top[0][0].source_ref
+    seen_ref_first, first_score = first.top[0][0].source_ref, first.top[0][1]
 
-    second = run_ask("crawler", top_n=2)
-    second_refs = [e.source_ref for e, _ in second.top]
-    # The first-shown ref is demoted; it shouldn't lead the followup.
-    assert second_refs[0] != seen_ref_first
+    second = run_ask("crawler", top_n=3)
+    seen_after = next(((e, s) for e, s in second.top if e.source_ref == seen_ref_first), None)
+    assert seen_after is not None, "seen entry vanished from followup — expected demoted, not removed"
+    assert seen_after[1] < first_score, (
+        f"session demotion didn't reduce the seen entry's score: "
+        f"first={first_score} second={seen_after[1]}"
+    )
 
 
 def test_run_ask_returns_empty_gracefully(repo: Path):

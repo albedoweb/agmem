@@ -94,6 +94,8 @@ class EvalPair:
 class EvalScore:
     pair: EvalPair
     top_k: list[str]
+    # +soft metrics — strict path-match OR gold basename mentioned in entry text.
+    # Kept as the legacy default; pair.followed_soft is the analogue for follow-rate.
     hit_at: dict[int, bool]
     recall_at: dict[int, float]
     mrr: float
@@ -104,6 +106,14 @@ class EvalScore:
     first_gold_rank=7 reveals "agmem almost surfaced this, just outside K=5"
     — different signal from "never found at all."
     """
+    # Strict-only metrics — top-K source_ref ∩ gold_files, no content-mention.
+    # This is the honest signal: soft Hit@5 inflates by ~14pp on the v5 set
+    # because plan-docs that *mention* the gold file count as hits even when the
+    # agent then opens different files. The sweep optimizes strict by default.
+    hit_at_strict: dict[int, bool] = field(default_factory=dict)
+    recall_at_strict: dict[int, float] = field(default_factory=dict)
+    mrr_strict: float = 0.0
+    first_gold_rank_strict: int | None = None
 
 
 @dataclass
@@ -117,19 +127,36 @@ class EvalReport:
         return len(self.scores)
 
     def coverage(self, k: int) -> float:
+        """+soft Hit@K (path-match OR content-mention). See ``coverage_strict``."""
         if not self.scores:
             return 0.0
         return sum(1 for s in self.scores if s.hit_at.get(k, False)) / len(self.scores)
+
+    def coverage_strict(self, k: int) -> float:
+        """Strict-only Hit@K: top-K ``source_ref`` ∩ gold (no content-mention)."""
+        if not self.scores:
+            return 0.0
+        return sum(1 for s in self.scores if s.hit_at_strict.get(k, False)) / len(self.scores)
 
     def mean_recall(self, k: int) -> float:
         if not self.scores:
             return 0.0
         return statistics.mean(s.recall_at.get(k, 0.0) for s in self.scores)
 
+    def mean_recall_strict(self, k: int) -> float:
+        if not self.scores:
+            return 0.0
+        return statistics.mean(s.recall_at_strict.get(k, 0.0) for s in self.scores)
+
     def mean_mrr(self) -> float:
         if not self.scores:
             return 0.0
         return statistics.mean(s.mrr for s in self.scores)
+
+    def mean_mrr_strict(self) -> float:
+        if not self.scores:
+            return 0.0
+        return statistics.mean(s.mrr_strict for s in self.scores)
 
     def follow_rate(self, soft: bool = False) -> tuple[float, int] | None:
         """Drift-free in-session follow rate: fraction of pairs where agmem's
@@ -142,9 +169,10 @@ class EvalReport:
         return sum(1 for v in vals if v) / len(vals), len(vals)
 
     def summary_lines(self) -> list[str]:
-        lines = [
-            f"Pairs analyzed:   {self.n_pairs}",
-        ]
+        """Headline = strict (the honest signal); +soft kept as a second column
+        because it's still useful as a diagnostic (gap between the two = how much
+        of the hit comes from plan-docs mentioning the gold file)."""
+        lines = [f"Pairs analyzed:   {self.n_pairs}"]
         fr = self.follow_rate(soft=False)
         if fr is not None:
             rate, n = fr
@@ -153,14 +181,14 @@ class EvalReport:
                          + (f" / {soft[0]:.1%} soft" if soft else ""))
         for k in sorted(self.ks):
             lines.append(
-                f"Coverage (Hit@{k}): {self.coverage(k):.1%}"
+                f"Hit@{k}:           {self.coverage_strict(k):.1%} strict / {self.coverage(k):.1%} +soft"
             )
         for k in sorted(self.ks):
             lines.append(
-                f"Mean Recall@{k}:    {self.mean_recall(k):.2f}"
+                f"Mean Recall@{k}:   {self.mean_recall_strict(k):.2f} strict / {self.mean_recall(k):.2f} +soft"
             )
         lines.append(
-            f"Mean MRR:         {self.mean_mrr():.2f}"
+            f"Mean MRR:          {self.mean_mrr_strict():.2f} strict / {self.mean_mrr():.2f} +soft"
         )
         return lines
 
@@ -177,13 +205,17 @@ class EvalReport:
                 "n_gold": len(s.pair.gold_files),
                 "n_top": len(s.top_k),
                 "mrr": round(s.mrr, 4),
+                "mrr_strict": round(s.mrr_strict, 4),
                 "first_gold_rank": s.first_gold_rank if s.first_gold_rank is not None else "",
+                "first_gold_rank_strict": s.first_gold_rank_strict if s.first_gold_rank_strict is not None else "",
                 "followed": "" if s.pair.followed is None else s.pair.followed,
                 "followed_soft": "" if s.pair.followed_soft is None else s.pair.followed_soft,
             }
             for k in sorted(self.ks):
                 row[f"hit_at_{k}"] = s.hit_at.get(k, False)
+                row[f"hit_at_{k}_strict"] = s.hit_at_strict.get(k, False)
                 row[f"recall_at_{k}"] = round(s.recall_at.get(k, 0.0), 4)
+                row[f"recall_at_{k}_strict"] = round(s.recall_at_strict.get(k, 0.0), 4)
             row["gold_files"] = "; ".join(sorted(s.pair.gold_files))
             row["top_k_files"] = "; ".join(s.top_k[:10])
             rows.append(row)
@@ -196,8 +228,11 @@ class EvalReport:
             "ks": sorted(self.ks),
             "n_pairs": self.n_pairs,
             "coverage": {str(k): self.coverage(k) for k in self.ks},
+            "coverage_strict": {str(k): self.coverage_strict(k) for k in self.ks},
             "mean_recall": {str(k): self.mean_recall(k) for k in self.ks},
+            "mean_recall_strict": {str(k): self.mean_recall_strict(k) for k in self.ks},
             "mean_mrr": self.mean_mrr(),
+            "mean_mrr_strict": self.mean_mrr_strict(),
             "follow_rate": (fr[0] if fr else None),
             "follow_rate_soft": (fr_soft[0] if fr_soft else None),
             "follow_rate_n": (fr[1] if fr else 0),
@@ -212,9 +247,13 @@ class EvalReport:
                     "gold_files": sorted(s.pair.gold_files),
                     "top_k": s.top_k,
                     "hit_at": {str(k): v for k, v in s.hit_at.items()},
+                    "hit_at_strict": {str(k): v for k, v in s.hit_at_strict.items()},
                     "recall_at": {str(k): v for k, v in s.recall_at.items()},
+                    "recall_at_strict": {str(k): v for k, v in s.recall_at_strict.items()},
                     "mrr": s.mrr,
+                    "mrr_strict": s.mrr_strict,
                     "first_gold_rank": s.first_gold_rank,
+                    "first_gold_rank_strict": s.first_gold_rank_strict,
                     "followed": s.pair.followed,
                     "followed_soft": s.pair.followed_soft,
                     "n_output_refs": s.pair.n_output_refs,
@@ -619,19 +658,23 @@ def _compute_hit_metrics(
     results: list[tuple[MemoryEntry, float]],
     gold_files: set[str],
     ks: list[int],
+    *,
+    soft: bool = True,
 ) -> tuple[dict[int, bool], dict[int, float], float, int | None]:
-    """Compute Hit@K, Recall@K, MRR, and first_gold_rank with content-mention soft matching.
+    """Compute Hit@K, Recall@K, MRR, and first_gold_rank.
 
-    Returns:
-        hit_at:           {k: bool}
-        recall_at:        {k: float}
-        mrr:              float (0.0 if no hit)
-        first_gold_rank:  1-indexed rank of first hit, or None if no hit found
+    Two modes:
 
-    1. Strict path match: top-K ``source_ref`` directly matches a gold file.
-    2. Soft content match: gold file or its basename appears in top-K entry text.
-    
-    Both count equally — agmem helped the agent find the file either way.
+    - ``soft=False`` (strict): top-K ``source_ref`` directly matches a gold file.
+      The honest signal — what agmem actually surfaced as a retrievable item.
+    - ``soft=True``: also counts content-mention — gold file or its basename
+      appears in the body of a retrieved entry (e.g. a plan doc that mentions
+      ``src/handler.py``). Inflates Hit@K vs strict; less correlated with the
+      agent's actual file access (a 2026-06-13 drill found 21/21 hit-not-followed
+      pairs went on to open files *other* than what agmem soft-matched).
+
+    Both modes are reported by ``EvalReport``; sweep defaults to strict to avoid
+    optimizing the inflated number.
     """
     hit_at: dict[int, bool] = {}
     recall_at: dict[int, float] = {}
@@ -640,34 +683,29 @@ def _compute_hit_metrics(
         top_entries = [e for e, _ in results[:k]]
         top_paths = {e.source_ref for e in top_entries if e.source_ref}
 
-        # Strict path match
         matched = top_paths & gold_files
-        remaining = gold_files - matched
-
-        # Soft content match for remaining gold files
-        if remaining:
-            all_text = "\n".join(e.text for e in top_entries)
-            soft_matched = {gf for gf in remaining if _gold_mentioned_in_text(gf, all_text)}
-            matched |= soft_matched
+        if soft:
+            remaining = gold_files - matched
+            if remaining:
+                all_text = "\n".join(e.text for e in top_entries)
+                soft_matched = {gf for gf in remaining if _gold_mentioned_in_text(gf, all_text)}
+                matched |= soft_matched
 
         hit_at[k] = len(matched) > 0
         recall_at[k] = len(matched) / len(gold_files) if gold_files else 0.0
 
-    # First-hit rank (1-indexed) — used for both MRR and the diagnostic field.
-    # Walks results in order; stops at the first entry that path-matches OR
-    # content-mentions any gold file.
+    # First-hit rank (1-indexed) — strict by default; ``soft`` also accepts
+    # content-mention matches.
     first_gold_rank: int | None = None
     for i, (entry, _) in enumerate(results, start=1):
-        top_path = entry.source_ref
-        if top_path and top_path in gold_files:
+        if entry.source_ref and entry.source_ref in gold_files:
             first_gold_rank = i
             break
-        if any(_gold_mentioned_in_text(gf, entry.text) for gf in gold_files):
+        if soft and any(_gold_mentioned_in_text(gf, entry.text) for gf in gold_files):
             first_gold_rank = i
             break
 
     mrr = 1.0 / first_gold_rank if first_gold_rank is not None else 0.0
-
     return hit_at, recall_at, mrr, first_gold_rank
 
 
@@ -675,20 +713,30 @@ def score_pair(
     pair: EvalPair,
     ks: list[int] | None = None,
 ) -> EvalScore:
-    """Run agmem context on the pair's query, score against gold_files."""
+    """Run agmem context on the pair's query, score against gold_files.
+
+    Computes BOTH strict (path-match only) and +soft (also content-mention)
+    flavors of Hit@K / Recall@K / MRR / first_gold_rank, so the report can show
+    both side-by-side and the sweep can optimize the honest (strict) one.
+    """
     if ks is None:
-        ks = [3, 5, 10, 20]
+        ks = [3, 5, 8, 10, 20]
     max_k = max(ks)
     results = search_filtered(pair.query, limit=max_k, tag=pair.tag, cwd=pair.cwd)
     top_refs = [e.source_ref for e, _ in results if e.source_ref]
-    hit_at, recall_at, mrr, first_gold_rank = _compute_hit_metrics(results, pair.gold_files, ks)
+    hit_soft, rec_soft, mrr_soft, rank_soft = _compute_hit_metrics(results, pair.gold_files, ks, soft=True)
+    hit_strict, rec_strict, mrr_strict, rank_strict = _compute_hit_metrics(results, pair.gold_files, ks, soft=False)
     return EvalScore(
         pair=pair,
         top_k=top_refs,
-        hit_at=hit_at,
-        recall_at=recall_at,
-        mrr=mrr,
-        first_gold_rank=first_gold_rank,
+        hit_at=hit_soft,
+        recall_at=rec_soft,
+        mrr=mrr_soft,
+        first_gold_rank=rank_soft,
+        hit_at_strict=hit_strict,
+        recall_at_strict=rec_strict,
+        mrr_strict=mrr_strict,
+        first_gold_rank_strict=rank_strict,
     )
 
 
@@ -721,7 +769,7 @@ def run_eval(
 ) -> EvalReport:
     """End-to-end eval: extract pairs (or use pre-loaded), score, produce report."""
     if ks is None:
-        ks = [3, 5, 10, 20]
+        ks = [3, 5, 8, 10, 20]
     if pairs is None:
         pairs = extract_eval_pairs(
             run_ids=run_ids, since=since,
@@ -870,7 +918,7 @@ def write_json(report: EvalReport, path: Path) -> None:
 
 def run_sweep(
     param_specs: list[str],
-    metric: str = "hit_at_5",
+    metric: str = "hit_at_5_strict",
     since: str | None = None,
     cwd_filter: str | None = None,
     pairs: list[EvalPair] | None = None,
@@ -880,6 +928,12 @@ def run_sweep(
     ``param_specs`` entries are ``"name=val1,val2,..."``. Supported names:
     ``kind_boost.rule``, ``kind_boost.pattern``, ``source_boost.manual``,
     ``source_ref_weight``, ``basename_weight``, ``title_weight``, ``b``.
+
+    ``metric`` accepts an optional ``_strict`` suffix (e.g. ``hit_at_5_strict``,
+    ``recall_at_5_strict``, ``mrr_strict``). **Strict is the default since
+    2026-06-13** — optimizing the soft-inclusive variant turned out to inflate
+    the headline via content-mention matches the agent doesn't actually follow.
+    Drop ``_strict`` to optimize the legacy +soft metric.
 
     Monkey-patches search module constants, re-scores all pairs, and returns
     the best combo + full result grid.
@@ -914,16 +968,20 @@ def run_sweep(
     keys = list(param_grid.keys())
     combos = list(itertools.product(*[param_grid[k] for k in keys]))
 
+    # Accept a ``_strict`` suffix to switch the metric flavor.
+    use_strict = metric.endswith("_strict")
+    base_metric = metric[: -len("_strict")] if use_strict else metric
     ks_map = {
-        "hit_at_3": 3, "hit_at_5": 5, "hit_at_10": 10, "hit_at_20": 20,
-        "recall_at_3": 3, "recall_at_5": 5, "recall_at_10": 10, "recall_at_20": 20,
+        "hit_at_3": 3, "hit_at_5": 5, "hit_at_8": 8, "hit_at_10": 10, "hit_at_20": 20,
+        "recall_at_3": 3, "recall_at_5": 5, "recall_at_8": 8, "recall_at_10": 10, "recall_at_20": 20,
     }
-    k_val = ks_map.get(metric, 5)
-    is_mrr = metric == "mrr"
+    k_val = ks_map.get(base_metric, 5)
+    is_mrr = base_metric == "mrr"
 
     orig_source_ref_weight = search._SOURCE_REF_WEIGHT
     orig_basename_weight = search._BASENAME_WEIGHT
     orig_title_weight = search._TITLE_WEIGHT
+    orig_doc_weight = search._DOC_WEIGHT
     orig_default_kind = dict(search.DEFAULT_KIND_BOOST)
     orig_default_source = dict(search.DEFAULT_SOURCE_BOOST)
 
@@ -939,6 +997,10 @@ def run_sweep(
             kind_boost = dict(search.DEFAULT_KIND_BOOST)
             source_boost = dict(search.DEFAULT_SOURCE_BOOST)
 
+            # Per-combo params that aren't module constants — passed via closure.
+            hybrid_alpha = 0.0
+            rerank_top_k = 0
+
             for key, val in combo_params.items():
                 if key == "kind_boost.rule":
                     kind_boost["rule"] = val
@@ -952,18 +1014,29 @@ def run_sweep(
                     search._BASENAME_WEIGHT = int(val)
                 elif key == "title_weight":
                     search._TITLE_WEIGHT = int(val)
+                elif key == "doc_weight":
+                    search._DOC_WEIGHT = int(val)
+                elif key == "hybrid_alpha":
+                    hybrid_alpha = float(val)
+                elif key == "rerank_top_k":
+                    rerank_top_k = int(val)
 
             search.DEFAULT_KIND_BOOST = kind_boost
             search.DEFAULT_SOURCE_BOOST = source_boost
 
-            scores = [_score_pair_monkeypatched(p, ks=[k_val]) for p in pairs]
+            scores = [_score_pair_monkeypatched(p, ks=[k_val],
+                                                 hybrid_alpha=hybrid_alpha,
+                                                 rerank_top_k=rerank_top_k) for p in pairs]
 
             if is_mrr:
-                agg = statistics.mean(s.mrr for s in scores) if scores else 0.0
-            elif metric.startswith("hit_at_"):
-                agg = sum(1 for s in scores if s.hit_at.get(k_val, False)) / len(scores) if scores else 0.0
+                agg = statistics.mean((s.mrr_strict if use_strict else s.mrr) for s in scores) if scores else 0.0
+            elif base_metric.startswith("hit_at_"):
+                if use_strict:
+                    agg = sum(1 for s in scores if s.hit_at_strict.get(k_val, False)) / len(scores) if scores else 0.0
+                else:
+                    agg = sum(1 for s in scores if s.hit_at.get(k_val, False)) / len(scores) if scores else 0.0
             else:
-                agg = statistics.mean(s.recall_at.get(k_val, 0.0) for s in scores) if scores else 0.0
+                agg = statistics.mean((s.recall_at_strict if use_strict else s.recall_at).get(k_val, 0.0) for s in scores) if scores else 0.0
 
             results.append({
                 "params": dict(combo_params),
@@ -979,10 +1052,11 @@ def run_sweep(
         search._SOURCE_REF_WEIGHT = orig_source_ref_weight
         search._BASENAME_WEIGHT = orig_basename_weight
         search._TITLE_WEIGHT = orig_title_weight
+        search._DOC_WEIGHT = orig_doc_weight
         search.DEFAULT_KIND_BOOST = orig_default_kind
         search.DEFAULT_SOURCE_BOOST = orig_default_source
 
-    if metric.startswith("recall") or is_mrr:
+    if base_metric.startswith("recall") or is_mrr:
         results.sort(key=lambda r: r["score"], reverse=True)
     else:
         results.sort(key=lambda r: r["score"], reverse=True)
@@ -1001,19 +1075,25 @@ def run_sweep(
 def _score_pair_monkeypatched(
     pair: EvalPair,
     ks: list[int] | None = None,
+    hybrid_alpha: float = 0.0,
+    rerank_top_k: int = 0,
 ) -> EvalScore:
-    """Like score_pair but uses current (patched) search module state."""
+    """Like score_pair but uses current (patched) search module state. Computes
+    both strict and +soft so the sweep can optimize either flavor.
+    ``hybrid_alpha`` / ``rerank_top_k`` are per-combo (passed by run_sweep),
+    not module constants."""
     if ks is None:
         ks = [5]
     max_k = max(ks)
-    results = search_filtered(pair.query, limit=max_k, tag=pair.tag, cwd=pair.cwd)
+    results = search_filtered(pair.query, limit=max_k, tag=pair.tag, cwd=pair.cwd,
+                              hybrid_alpha=hybrid_alpha, rerank_top_k=rerank_top_k)
     top_refs = [e.source_ref for e, _ in results if e.source_ref]
-    hit_at, recall_at, mrr, first_gold_rank = _compute_hit_metrics(results, pair.gold_files, ks)
+    hit_soft, rec_soft, mrr_soft, rank_soft = _compute_hit_metrics(results, pair.gold_files, ks, soft=True)
+    hit_strict, rec_strict, mrr_strict, rank_strict = _compute_hit_metrics(results, pair.gold_files, ks, soft=False)
     return EvalScore(
         pair=pair,
         top_k=top_refs,
-        hit_at=hit_at,
-        recall_at=recall_at,
-        mrr=mrr,
-        first_gold_rank=first_gold_rank,
+        hit_at=hit_soft, recall_at=rec_soft, mrr=mrr_soft, first_gold_rank=rank_soft,
+        hit_at_strict=hit_strict, recall_at_strict=rec_strict,
+        mrr_strict=mrr_strict, first_gold_rank_strict=rank_strict,
     )

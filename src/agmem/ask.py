@@ -150,6 +150,14 @@ def _rerank_for_session(
     rescored: list[tuple[MemoryEntry, float]] = []
     for entry, score in results:
         ref = entry.source_ref or ""
+        # Only multiply onto positive scores. Negative BM25 means "this doc is
+        # less relevant than average" — multiplying by 0.3 makes it LESS negative
+        # (i.e., higher rank!), which would perversely promote seen entries that
+        # are also BM25-irrelevant. Same guard as the kind/source boosts in
+        # search.search(): boosts apply only when there's a real positive signal.
+        if score <= 0:
+            rescored.append((entry, score))
+            continue
         if ref in seen:
             rescored.append((entry, score * _SEEN_DEMOTE))
         elif ref and _file_of(ref) in seen_files and ref not in seen:

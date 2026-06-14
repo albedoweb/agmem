@@ -67,15 +67,58 @@ DEFAULT_SOURCE_BOOST: dict[str, float] = {"manual": 1.0}
 # `aws_s3_bucket` tokenize to ['aws', 's3', 'bucket'] and match queries like "s3 bucket".
 _TOKEN_SPLIT_RE = re.compile(r"[\W_]+", re.UNICODE)
 
+# Light morphological folding so "syncing"↔"sync", "handlers"↔"handler", and
+# "categories"↔"category" match. Conservative — not full Porter (over-stems
+# names like "deployment" → "deploy"). Applied to both query and corpus tokens
+# (so they stay in sync). Toggle via _STEMMING_ENABLED for ablation.
+_STEMMING_ENABLED = True
+
+
+def _stem(token: str) -> str:
+    """Conservative suffix folding. Skips short tokens, common false-positive
+    endings (-ss/-us/-is/-os), and handles double-consonant verb forms
+    (running → run, not "runn")."""
+    if len(token) < 4:
+        return token
+    # plural / 3rd-person -s
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"                # categories → category
+    if token.endswith("es") and len(token) > 4 and token[-3] in "sxz":
+        return token[:-2]                       # classes → class, boxes → box
+    if token.endswith("s") and len(token) > 3 and not token.endswith(("ss", "us", "is", "os")):
+        return token[:-1]                       # handlers → handler
+    # verb -ing
+    if token.endswith("ing") and len(token) > 5:
+        stem = token[:-3]
+        if len(stem) >= 3 and stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+            return stem[:-1]                    # running → run
+        return stem                              # syncing → sync
+    # verb -ed
+    if token.endswith("ed") and len(token) > 4:
+        stem = token[:-2]
+        if len(stem) >= 3 and stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+            return stem[:-1]                    # stopped → stop
+        return stem                              # synced → sync
+    return token
+
 # Multi-field weights — each segment is repeated this many times in the BM25 corpus,
 # effectively giving its tokens a higher term frequency.
 _SOURCE_REF_WEIGHT = 3
 _BASENAME_WEIGHT = 2
 _TITLE_WEIGHT = 2
+# Docstrings / godoc summary lines (the [1b] enrich-index field). Sweep on the
+# v5 frozen set (2026-06-13) showed weight=1 is the Pareto sweet spot: same
+# +2.8pp strict Hit@5 lift as higher values, smallest MRR regression (-0.009 vs
+# -0.016 at weight=2), best Hit@10. Higher weights overfit doc-tokens and push
+# rank-1 down without further widening the top-5.
+_DOC_WEIGHT = 1
 
 # Pulls the H1/title out of indexer-generated text like:
 #   File `path` — Markdown doc — "Real Title", 5 sections. ...
 _TITLE_RE = re.compile(r'Markdown doc — "([^"]+)"')
+# Pulls the trailing `\nDocs: <doc1> | <doc2> | …` segment that the indexer
+# attaches to code-file entries. DOTALL because docs may contain newlines.
+_DOCS_RE = re.compile(r'\nDocs: (.+)$', re.DOTALL)
 
 # MMR (Maximal Marginal Relevance) reranking defaults. OFF by default —
 # measured eval-neutral on the Track A golden set, kept available behind config.
@@ -106,7 +149,10 @@ def _read_mmr_config(cwd: str | None = None) -> tuple[bool, float]:
 
 def _tokenize(text: str) -> list[str]:
     tokens = _TOKEN_SPLIT_RE.split(text.lower())
-    return [t for t in tokens if t and t not in STOP_WORDS]
+    kept = [t for t in tokens if t and t not in STOP_WORDS]
+    if _STEMMING_ENABLED:
+        kept = [_stem(t) for t in kept]
+    return kept
 
 
 def _build_corpus_text(entry: MemoryEntry) -> str:
@@ -125,6 +171,9 @@ def _build_corpus_text(entry: MemoryEntry) -> str:
     title_match = _TITLE_RE.search(entry.text)
     if title_match:
         parts.extend([title_match.group(1)] * _TITLE_WEIGHT)
+    docs_match = _DOCS_RE.search(entry.text)
+    if docs_match:
+        parts.extend([docs_match.group(1)] * _DOC_WEIGHT)
     return " ".join(parts)
 
 
@@ -212,6 +261,43 @@ def _mmr_rerank(
     ]
 
 
+def _read_hybrid_alpha(cwd: str | None = None) -> float:
+    """Read hybrid retrieval setting from ``.agmem/config.yaml``:
+
+    [hybrid]
+      enabled: true
+      alpha: 0.3
+
+    Returns 0.0 (= disabled, pure BM25) by default."""
+    try:
+        cfg = config.read_config(cwd)
+        h = cfg.get("hybrid") if isinstance(cfg, dict) else None
+        if isinstance(h, dict) and h.get("enabled"):
+            return float(h.get("alpha", 0.3))
+    except Exception:
+        pass
+    return 0.0
+
+
+def _read_rerank_top_k(cwd: str | None = None) -> int:
+    """Read cross-encoder reranking setting from ``.agmem/config.yaml``:
+
+    [rerank]
+      enabled: true
+      top_k: 20
+
+    Returns 0 (= disabled) by default. Reranking only kicks in when the
+    ``hybrid`` extras are installed (Reranker uses sentence-transformers)."""
+    try:
+        cfg = config.read_config(cwd)
+        r = cfg.get("rerank") if isinstance(cfg, dict) else None
+        if isinstance(r, dict) and r.get("enabled"):
+            return int(r.get("top_k", 20))
+    except Exception:
+        pass
+    return 0
+
+
 def search(
     query: str,
     entries: list[MemoryEntry],
@@ -222,7 +308,23 @@ def search(
     aliases: dict[str, list[str]] | None = None,
     mmr_enabled: bool = False,
     mmr_lambda: float = 0.7,
+    hybrid_alpha: float = 0.0,
+    embedder=None,
+    rerank_top_k: int = 0,
+    reranker=None,
 ) -> list[tuple[MemoryEntry, float]]:
+    """BM25 search with optional hybrid dense fusion and cross-encoder rerank.
+
+    ``hybrid_alpha`` ∈ [0, 1]: 0 = pure BM25 (default, no embedder needed),
+    1 = pure dense, in-between blends min-max-normalized BM25 with cosine.
+    ``embedder`` is an ``agmem.embeddings.Embedder`` — required iff alpha > 0.
+
+    ``rerank_top_k`` > 0 turns on cross-encoder second-stage reranking over the
+    top-K candidates from BM25+hybrid; ``reranker`` is an
+    ``agmem.embeddings.Reranker``. Tail beyond top-K is preserved in its
+    original order (CE only re-orders the top — cheaper, and uncommon to want
+    rank K+1 anyway).
+    """
     if not entries:
         return []
 
@@ -246,12 +348,31 @@ def search(
     # mean the document is BM25-irrelevant (e.g. query terms appear in every
     # doc of a tiny corpus → IDF goes negative); multiplying a negative score
     # by 2× would perversely demote relevant entries below irrelevant ones.
-    scores = [
+    scores: list[float] = [
         s * kb.get(e.kind, 1.0) * sb.get(e.source, 1.0) if s > 0 else s
         for s, e in zip(raw_scores, entries)
     ]
 
+    # Hybrid fusion — only when both opted in (alpha > 0) AND an embedder is wired.
+    if hybrid_alpha > 0 and embedder is not None:
+        from . import embeddings as _emb
+        entry_vecs = embedder.embed_texts([e.text for e in entries])
+        query_vec = embedder.embed_query(expanded_query)
+        # Vectors are L2-normalized → dot product = cosine similarity.
+        cosines = (entry_vecs @ query_vec).tolist()
+        scores = _emb.fuse_scores(scores, cosines, hybrid_alpha)
+
     ranked = sorted(zip(entries, scores), key=lambda x: x[1], reverse=True)
+
+    # Cross-encoder rerank — only over the top-K pool. Re-orders ranks 0..K-1
+    # by relevance score; ranks K+ keep their original BM25/hybrid order.
+    if rerank_top_k > 0 and reranker is not None and len(ranked) > 1:
+        k = min(rerank_top_k, len(ranked))
+        pool_entries = [e for e, _ in ranked[:k]]
+        ce_scores = reranker.score(query, [e.text for e in pool_entries])
+        reranked = sorted(zip(pool_entries, ce_scores),
+                          key=lambda x: x[1], reverse=True)
+        ranked = reranked + ranked[k:]
 
     if mmr_enabled and len(ranked) > 1 and top_n > 0:
         pool = ranked[: max(top_n * 2, DEFAULT_MMR_POOL_SIZE)]
@@ -269,14 +390,40 @@ def search_filtered(
     source_boost: dict[str, float] | None = None,
     mmr_enabled: bool = False,
     mmr_lambda: float = 0.7,
+    hybrid_alpha: float | None = None,
+    rerank_top_k: int | None = None,
 ) -> list[tuple[MemoryEntry, float]]:
     from .store import read_all_entries
     entries = read_all_entries(cwd)
     aliases = _resolve_aliases(cwd)
+    # Resolve hybrid_alpha + rerank_top_k: explicit param > config; default off.
+    if hybrid_alpha is None:
+        hybrid_alpha = _read_hybrid_alpha(cwd)
+    if rerank_top_k is None:
+        rerank_top_k = _read_rerank_top_k(cwd)
+
+    extras_needed = (hybrid_alpha and hybrid_alpha > 0) or (rerank_top_k and rerank_top_k > 0)
+    embedder = None
+    reranker = None
+    if extras_needed:
+        from . import embeddings as _emb
+        if not _emb.is_available():
+            import sys
+            print("[agmem] hybrid/rerank requested but optional extras not installed; "
+                  "falling back to BM25. Install via `pip install agmem[hybrid]`.", file=sys.stderr)
+            hybrid_alpha = 0.0
+            rerank_top_k = 0
+        else:
+            if hybrid_alpha and hybrid_alpha > 0:
+                embedder = _emb.Embedder(cache_dir=config.agmem_dir(cwd) / "embeddings")
+            if rerank_top_k and rerank_top_k > 0:
+                reranker = _emb.Reranker()
     return search(
         query, entries,
         top_n=limit, tag_filter=tag,
         kind_boost=kind_boost, source_boost=source_boost,
         aliases=aliases,
         mmr_enabled=mmr_enabled, mmr_lambda=mmr_lambda,
+        hybrid_alpha=hybrid_alpha or 0.0, embedder=embedder,
+        rerank_top_k=rerank_top_k or 0, reranker=reranker,
     )

@@ -12,6 +12,11 @@ class Block:
     block_type: str
     name: str
     labels: list[str] = field(default_factory=list)
+    doc: str = ""
+    """First line of the block's documentation (Python docstring, Go godoc
+    comment). Empty when missing. Indexed in a separate weighted segment so
+    intent-shaped queries can match natural-language docs instead of just
+    identifier names — the [1b] enrich-index lever."""
 
     @property
     def full_name(self) -> str:

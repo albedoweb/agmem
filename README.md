@@ -85,23 +85,32 @@ custom CI scripts — see the [agent integration guide](./DESIGN.md#use-with-you
 
 ## Benchmark
 
-agmem's BM25 retrieval against [LongMemEval-S](https://arxiv.org/abs/2410.10813)
-(500 questions, per-question corpus of ~48 dialogue sessions):
+agmem against [LongMemEval-S](https://arxiv.org/abs/2410.10813)
+(500 questions, per-question corpus of ~48 dialogue sessions). Two
+configurations — the BM25-only baseline (no extras) and the **hybrid
+α=0.3** default that ships in `[hybrid]`:
 
-| K  | recall (strict) | recall_any | NDCG  |
-|---:|----------------:|-----------:|------:|
-| 3  |           86.6% |      94.8% | 0.872 |
-| 5  |       **90.8%** |      96.8% | 0.884 |
-| 10 |           94.7% |      98.6% | 0.901 |
-| 20 |           97.0% |      99.4% | 0.909 |
+| K  | BM25 strict | **Hybrid α=0.3 strict** | recall_any (hybrid) | NDCG (hybrid) |
+|---:|------------:|------------------------:|--------------------:|--------------:|
+| 3  |       87.3% |               **89.5%** |              96.0%  |  0.899 |
+| 5  |       91.6% |               **93.9%** |              97.6%  |  0.912 |
+| 8  |       94.6% |               **96.1%** |              98.8%  |  0.922 |
+| 10 |       95.1% |               **97.0%** |              99.2%  |  0.925 |
+| 20 |       97.9% |               **99.1%** |              99.8%  |  0.932 |
 
-MRR: **0.917**. Runtime: ~13s on a laptop. No vectors, no reranking, no LLM
-calls.
+MRR: BM25 0.916  →  **hybrid 0.932**. BM25-only runs in ~17s; hybrid
+~152s cold (embeds 25k sessions) and ~15s warm via the on-disk
+content-hash cache. No LLM calls.
 
 `recall (strict)` = `|top_K ∩ gold| / |gold|` averaged over questions
 (LongMemEval standard; 65% of questions have 2-6 gold sessions, so this is
 harder than "any hit in top-K"). `recall_any` is the lenient "≥1 gold in
 top-K" variant. NDCG is real `1/log2(rank+1)`.
+
+The hybrid lift is concentrated on the hardest categories — **temporal-
+reasoning +3.6 pp** R@5 and **multi-session +3.7 pp** — where lexical
+overlap is weakest; categories already saturated by BM25 (knowledge-update,
+single-session-*) stay at 100%.
 
 LongMemEval is conversational — it measures chat-history retrieval, not code.
 agmem's primary use is code memory; see

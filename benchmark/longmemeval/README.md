@@ -18,38 +18,63 @@ pip install datasets
 # 1. Download (pin a revision for reproducibility)
 python benchmark/longmemeval/download.py --revision <hf-commit-sha>
 
-# 2. Run
-python benchmark/longmemeval/run.py --top-k 3,5,10,20 --out results/baseline
+# 2a. BM25-only run (fast, no extras)
+python benchmark/longmemeval/run.py --top-k 3,5,8,10,20 --out results/bm25
+
+# 2b. Hybrid run (matches the shipped repo default of α=0.3; needs
+#     `pip install 'agmem[hybrid]'` — sentence-transformers + numpy)
+python benchmark/longmemeval/run.py \
+  --top-k 3,5,8,10,20 --hybrid-alpha 0.3 \
+  --out results/v2-hybrid03
 
 # Or via CLI
-agmem eval-longmemeval --top-k 3,5,10,20 --out results/baseline
+agmem eval-longmemeval --top-k 3,5,8,10,20 --hybrid-alpha 0.3 --out results/baseline
 ```
 
-## Results
+## Results — 2026-06-13
 
-500 questions, BM25-only retrieval, per-question corpus (~48 distractor
-sessions per question, median 48), no vectors, no reranking, no LLM
-calls. Runtime ~13s on a laptop.
+500 questions, per-question corpus (~48 distractor sessions per question,
+median 48), no LLM calls.
+
+### Headline: **hybrid α=0.3** (matches shipped repo default)
 
 | K  | recall (strict) | recall_any | NDCG   |
 |---:|----------------:|-----------:|-------:|
-| 3  |           86.6% |      94.8% | 0.872  |
-| 5  |       **90.8%** |      96.8% | 0.884  |
-| 10 |           94.7% |      98.6% | 0.901  |
-| 20 |           97.0% |      99.4% | 0.909  |
+| 3  |           89.5% |      96.0% | 0.899  |
+| 5  |       **93.9%** |      97.6% | 0.912  |
+| 8  |           96.1% |      98.8% | 0.922  |
+| 10 |           97.0% |      99.2% | 0.925  |
+| 20 |           99.1% |      99.8% | 0.932  |
 
-MRR: **0.9167**
+MRR: **0.9316**. Cold runtime: 152s on a laptop (embedding 25k session
+entries); warm re-runs reuse the content-hash cache and finish in ~15s.
 
-Per question type, recall@5:
+### Baseline: **BM25-only** (no extras, for reference)
 
-| Type                       | n   | R@5 strict | R@5 any |
-|---|---:|---:|---:|
-| multi-session              | 133 | 83.7%      | 97.0%   |
-| temporal-reasoning         | 133 | 85.5%      | 94.0%   |
-| knowledge-update           |  78 | 98.7%      | 100.0%  |
-| single-session-user        |  70 | 98.6%      | 98.6%   |
-| single-session-assistant   |  56 | 100.0%     | 100.0%  |
-| single-session-preference  |  30 | 90.0%      | 90.0%   |
+| K  | recall (strict) | recall_any | NDCG   |
+|---:|----------------:|-----------:|-------:|
+| 3  |           87.3% |      95.0% | 0.877  |
+| 5  |           91.6% |      97.0% | 0.889  |
+| 8  |           94.6% |      97.6% | 0.903  |
+| 10 |           95.1% |      97.8% | 0.905  |
+| 20 |           97.9% |      99.8% | 0.914  |
+
+MRR: 0.9158. Runtime ~17s.
+
+### Δ from BM25 → hybrid by question type (R@5 strict)
+
+The hybrid score (BM25 ⊕ MiniLM-L6 cosine, α=0.3 fused via min-max
+normalisation) helps most on the categories where lexical overlap is
+weakest:
+
+| Type                       | n   | BM25-only | Hybrid α=0.3 | Δ        |
+|---|---:|---:|---:|---:|
+| multi-session              | 133 | 87.1%     | **90.8%**    | +3.7 pp  |
+| temporal-reasoning         | 133 | 85.3%     | **88.9%**    | +3.6 pp  |
+| single-session-preference  |  30 | 86.7%     | 90.0%        | +3.3 pp  |
+| knowledge-update           |  78 | 99.4%     | 99.4%        | saturated|
+| single-session-user        |  70 | 98.6%     | 100.0%       | +1.4 pp  |
+| single-session-assistant   |  56 | 100.0%    | 100.0%       | saturated|
 
 ## Methodology
 
@@ -88,4 +113,8 @@ session_id so gold-set comparison still works.
   specific commit and records it in `cache/dataset_info.json`. Re-runs
   with a different `--revision` print a warning.
 - BM25 is deterministic — same input, same output across runs.
-- 13s on a 2024 MacBook Pro M-series. Linear in question count.
+- Hybrid embeddings are content-hash cached under
+  `benchmark/longmemeval/cache/embeddings/` (see `--embed-cache-dir`);
+  warm re-runs read from disk and skip the model.
+- BM25-only: ~17s on a 2024 MacBook Pro M-series. Hybrid cold: ~152s.
+  Linear in question count.

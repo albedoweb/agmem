@@ -412,8 +412,13 @@ def _build_memories(
         block_list = "; ".join(b.full_name for b in analysis.blocks[:20])
         suffix = f" + {len(analysis.blocks) - 20} more" if len(analysis.blocks) > 20 else ""
         header = f"Purpose: {analysis.header_comment} " if analysis.header_comment else ""
+        # Docstrings/godoc summary lines — a separate weighted field in search.
+        # Intent-shaped queries ("what does this task do") match here when they
+        # don't match identifier names.
+        docs = [b.doc for b in analysis.blocks[:20] if b.doc]
+        docs_segment = f"\nDocs: {' | '.join(docs)}" if docs else ""
         entries.append(_build_entry(
-            text=f"{prefix}{header}File `{path}` — {analysis.summary}. Items: {block_list}{suffix}.",
+            text=f"{prefix}{header}File `{path}` — {analysis.summary}. Items: {block_list}{suffix}.{docs_segment}",
             tags=base_tags,
             source=INDEX_SOURCE,
             source_ref=path,
