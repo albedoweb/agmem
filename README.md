@@ -21,7 +21,8 @@ Works with **Claude Code, Codex, opencode, Cursor, Aider** — anything that
 runs a shell command. 60-second install:
 
 ```bash
-# Alpha — not yet on PyPI under this name. Install from source:
+# Install from source (⚠️ `pip install agmem` on PyPI is an UNRELATED project —
+# always install this tool via git):
 uv tool install --from git+https://github.com/albedoweb/agmem agmem
 # …or from a local clone:
 git clone https://github.com/albedoweb/agmem && uv tool install --from ./agmem agmem
@@ -101,6 +102,26 @@ custom CI scripts — see the [agent integration guide](./DESIGN.md#use-with-you
 - Returns kind-typed answers — Constraints above Facts above Patterns.
 - Tracks drift — every entry carries `source_hash` + `source_commit`.
 - Searches inside markdown sections, not just whole files.
+
+## How it compares
+
+|  | mem0 / Letta (MemGPT) | claude-mem | CLAUDE.md / .cursorrules | **agmem** |
+|---|---|---|---|---|
+| Built for | chat agents, personal long-term memory | Claude Code session recall | static always-on rules | **code repos, task-scoped context** |
+| Storage | vector DB / server-backed | SQLite | one text file | **JSONL you can `cat`, grep, diff** |
+| Retrieval | embeddings (+LLM extraction) | LLM-compressed summaries | none — always in context | **BM25; local embeddings opt-in** |
+| Needs LLM / API calls | yes | yes (compression) | no | **no** |
+| Indexes your actual code | no | no (transcripts only) | no | **yes — tf / py / go / yaml / md** |
+| Knows when memory went stale | no | no | no (silently drifts) | **`source_hash` + `agmem verify`** |
+| Agent integration | SDK / framework | Claude Code plugin | agent-specific file | **any agent that can run a shell command** |
+| Runs offline | depends | no | yes | **yes** |
+
+The adjacent families in one line each: **vector DBs** (Chroma, Qdrant) —
+agmem is lexical-first, no server, no GPU; the opt-in `[hybrid]` extra caches
+local vectors in a flat `.npy`. **MCP memory servers** — agmem is shell-out,
+no protocol coupling, no long-running process. **Doc generators** — those
+produce static docs; agmem produces a queryable, source-linked store with
+drift detection.
 
 ## Benchmark
 

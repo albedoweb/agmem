@@ -277,12 +277,9 @@ The output is markdown with stable headers (`## Constraints`, `## Facts`,
 
 ## Comparison to similar tools
 
-`agmem` overlaps with many things and is identical to none. Brief positioning:
-
-| Tool family | Difference |
-|---|---|
-| **Mem0 / Letta / Zep / mem-style libraries** | They target chat agents and personal long-term memory across topics. agmem is code-specific, git-aware, diff-aware, and inspectable as plain JSONL. |
-| **Vector DBs (Chroma, Qdrant, pgvector, etc.)** | agmem is lexical-first — sub-100ms BM25 with no GPU/network. The opt-in `[hybrid]` extra adds local sentence-transformers vectors cached as a flat `.npy` file: still no server, no index to run, nothing leaves the machine. |
-| **MCP servers (memory tools, filesystem mounts)** | agmem is shell-out, not MCP. No protocol coupling, no long-running server required. Wires into any agent that runs commands. |
-| **Doc generators (mkdocs, automated readmes)** | Those produce static docs. agmem produces a queryable, source-linked, kind-typed memory store with drift detection. |
-| **CLAUDE.md / `.cursorrules` / `.aiderules` etc.** | Those are global static rules. agmem retrieves *task-relevant* memory per query and lets you keep facts/patterns separate from rules. |
+`agmem` overlaps with many things and is identical to none. The full
+feature-by-feature table (mem0/Letta, claude-mem, static rules files, vector
+DBs, MCP memory servers) lives in the
+[README — "How it compares"](./README.md#how-it-compares). The one-line
+thesis: code-specific, git-aware, plain-text-inspectable, callable from any
+agent that can run a shell command — no LLM calls, no server.
