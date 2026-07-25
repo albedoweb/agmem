@@ -1,0 +1,39 @@
+# Publishes to PyPI on a version tag (v0.1.0, v0.2.0, ...).
+#
+# Uses PyPI "trusted publishing" (OIDC) — no token stored in GitHub secrets.
+# One-time setup on pypi.org: project → Manage → Publishing → add GitHub
+# publisher (owner: albedoweb, repo: agmem, workflow: release.yml,
+# environment: pypi).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run tests first
+        run: uv sync && uv run pytest -q
+      - name: Build sdist + wheel
+        run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

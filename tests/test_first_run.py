@@ -80,6 +80,29 @@ class TestInitIndexContext:
         assert "UTC" in result.output
 
 
+class TestAgmemDirHygiene:
+    """`.agmem/` may be committed by choice — runtime files must never be."""
+
+    def test_init_ships_runtime_gitignore(self, fresh_repo):
+        assert runner.invoke(app, ["init"]).exit_code == 0
+        gi = fresh_repo / ".agmem" / ".gitignore"
+        assert gi.exists()
+        body = gi.read_text()
+        for runtime in ("_hot.md", "_ask_session.json", "embeddings/"):
+            assert runtime in body
+
+    def test_reindex_of_unchanged_repo_is_a_noop_diff(self, fresh_repo):
+        """Unchanged content ⇒ byte-identical memories.jsonl, so a committed
+        .agmem/ doesn't produce a full-file diff after every reindex."""
+        (fresh_repo / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        assert runner.invoke(app, ["init"]).exit_code == 0
+        assert runner.invoke(app, ["index"]).exit_code == 0
+        store = fresh_repo / ".agmem" / "memories.jsonl"
+        first = store.read_bytes()
+        assert runner.invoke(app, ["index"]).exit_code == 0
+        assert store.read_bytes() == first
+
+
 class TestHiddenAncestorRepo:
     """A repo living UNDER a dot-directory (~/.config/nvim, ~/.dotfiles/x)
     must index normally — only root-RELATIVE dot components are skipped."""

@@ -1,5 +1,9 @@
 # agmem
 
+[![CI](https://github.com/albedoweb/agmem/actions/workflows/ci.yml/badge.svg)](https://github.com/albedoweb/agmem/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
+
 **Persistent, source-linked project memory for coding agents.** Local JSONL
 store. BM25-first retrieval — embeddings are an optional local add-on, never
 required. Git-aware — `post-merge` hook keeps memory in sync when teammates

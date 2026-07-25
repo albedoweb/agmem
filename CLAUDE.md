@@ -1,3 +1,6 @@
+<!-- This file doubles as a live showcase: it is exactly the block that
+     `agmem init --emit-claude-md` writes into YOUR repo's CLAUDE.md
+     (agmem dogfoods itself here). -->
 <!-- agmem:start -->
 ## agmem — project memory
 

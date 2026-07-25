@@ -171,6 +171,10 @@ def _build_entry(
     if prior is not None and source_hash is not None and prior.source_hash == source_hash:
         verified_at = prior.verified_at
         drifted_at = prior.drifted_at
+        # Keep the original timestamp too: unchanged content must produce an
+        # unchanged JSONL line, so a committed .agmem/ doesn't show a
+        # full-file diff after every reindex.
+        ts = prior.ts
     return MemoryEntry(
         id=entry_id,
         ts=ts,

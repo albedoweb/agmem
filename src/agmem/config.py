@@ -249,11 +249,29 @@ def write_config(data: dict, cwd: str | None = None) -> None:
         yaml.safe_dump(data, f, default_flow_style=False)
 
 
+AGMEM_RUNTIME_GITIGNORE = """\
+# agmem runtime state — regenerated locally; never commit.
+# (memories.jsonl and config.yaml are safe to commit if you want to
+#  share memory with teammates.)
+_hot.md
+_ask_session.json
+_watch_queue.jsonl
+embeddings/
+testq-snapshots/
+*.tmp
+"""
+
+
 def init_config(project_name: str | None = None) -> dict[str, str | int]:
     cfg: dict[str, str | int] = dict(DEFAULT_CONFIG)
     if project_name:
         cfg["project"] = project_name
     write_config(cfg)
+    # Runtime files must never be committed even when the user chooses to
+    # commit .agmem/ itself — ship a scoped .gitignore.
+    gi = agmem_dir() / ".gitignore"
+    if not gi.exists():
+        gi.write_text(AGMEM_RUNTIME_GITIGNORE, encoding="utf-8")
     return cfg
 
 
