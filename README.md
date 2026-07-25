@@ -4,7 +4,9 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 
-**Persistent, source-linked project memory for coding agents.** Local JSONL
+**Your agent re-greps the same repo every session. agmem remembers.**
+
+Persistent, source-linked project memory for coding agents. Local JSONL
 store. BM25-first retrieval — embeddings are an optional local add-on, never
 required. Git-aware — `post-merge` hook keeps memory in sync when teammates
 push. No MCP, no SaaS, nothing leaves your machine. Apache 2.0.
