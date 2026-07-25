@@ -84,7 +84,13 @@ def _load_gitignore(root: Path) -> pathspec.PathSpec | None:
 
 
 def _should_skip(path: Path, root: Path, spec: pathspec.PathSpec | None) -> bool:
-    parts = path.parts
+    # Judge only ROOT-RELATIVE components. Checking the absolute path would
+    # skip every file in a repo that merely LIVES under a hidden directory
+    # (~/.config/nvim, ~/.dotfiles/x → "indexed 0 files").
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = path.parts  # outside root — fall back to the absolute parts
     for part in parts:
         if part.endswith(SKIP_DIR_SUFFIXES) or part in SKIP_DIRS:
             return True
@@ -501,13 +507,9 @@ def run_index(
     else:
         kept = [e for e in existing if e.source != INDEX_SOURCE]
 
-    config.ensure_agmem_dir(cwd)
-    path = config.memories_path(cwd)
-    with open(path, "w") as f:
-        for e in kept:
-            f.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
-        for e in new_entries:
-            f.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
+    # Atomic tmp+fsync+rename via rewrite_entries — a crash mid-index must
+    # never destroy manual memories.
+    rewrite_entries(kept + new_entries, cwd)
 
     in_scope_before = sum(
         1 for e in preserve_from.values()

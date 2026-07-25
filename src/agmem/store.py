@@ -1,6 +1,9 @@
 """JSONL memory store: read, atomic append, ULID generation."""
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows: no fcntl — locking degrades to a no-op
+    fcntl = None  # type: ignore[assignment]
 import hashlib
 import json
 import os
@@ -12,6 +15,16 @@ from . import config
 
 VALID_KINDS: tuple[str, ...] = ("rule", "fact", "pattern")
 DEFAULT_KIND = "fact"
+
+
+def _flock_ex(f) -> None:
+    if fcntl is not None:
+        fcntl.flock(f, fcntl.LOCK_EX)
+
+
+def _flock_un(f) -> None:
+    if fcntl is not None:
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def stable_id(source: str, source_ref: str) -> str:
@@ -161,13 +174,13 @@ def append_entry(entry: MemoryEntry, cwd: str | None = None) -> None:
     path = config.memories_path(cwd)
     line = json.dumps(entry.to_dict(), ensure_ascii=False) + "\n"
     with open(path, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _flock_ex(f)
         try:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _flock_un(f)
 
 
 def find_entries_by_id_prefix(prefix: str, cwd: str | None = None) -> list[MemoryEntry]:
@@ -183,12 +196,12 @@ def rewrite_entries(entries: list[MemoryEntry], cwd: str | None = None) -> None:
     path = config.memories_path(cwd)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _flock_ex(f)
         try:
             for entry in entries:
                 f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _flock_un(f)
     os.replace(tmp, path)

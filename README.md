@@ -24,6 +24,10 @@ cd my-repo && agmem init && agmem index
 agmem context "rds bastion ec2 instance"
 ```
 
+Tested on macOS and Linux. Windows is best-effort: the package imports and
+core commands run, but file locking degrades to a no-op (assume a single
+writer) and it isn't covered by CI yet.
+
 ```text
 # Context for: rds bastion ec2 instance
 

@@ -14,6 +14,7 @@ from .config import (
     init_config,
     install_claude_hook,
     install_git_hook,
+    is_initialized,
     read_config,
 )
 from .hook import run_inject_hook
@@ -60,6 +61,13 @@ hook_app = typer.Typer(
 app.add_typer(hook_app)
 
 
+def _require_initialized() -> None:
+    """Exit with a friendly hint when `agmem init` hasn't been run here."""
+    if not is_initialized():
+        typer.echo("Not initialized. Run `agmem init` first.", err=True)
+        raise typer.Exit(code=1)
+
+
 @hook_app.command("inject")
 def hook_inject():
     """UserPromptSubmit handler: emit <agmem-context> additionalContext block."""
@@ -86,12 +94,8 @@ def init(
     ),
 ):
     """Initialize .agmem/ in repo and optionally wire Claude Code integration."""
-    already = False
-    try:
-        cfg = read_config()
-        already = bool(cfg)
-    except Exception:
-        cfg = {}
+    already = is_initialized()
+    cfg = read_config() if already else {}
 
     if not already:
         cfg = init_config(project_name=project)
@@ -115,8 +119,6 @@ def init(
             for hook_name, (hook_path, hook_action) in results.items():
                 typer.echo(f"Git {hook_name} hook {hook_action}: {hook_path}")
 
-    if already and not (emit_claude_md_flag or install_hook or install_git_hook_flag):
-        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -135,11 +137,7 @@ def remember(
     ),
 ):
     """Store a new memory entry."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     if kind not in VALID_KINDS:
         typer.echo(f"Invalid --kind {kind!r}. Allowed: {', '.join(VALID_KINDS)}", err=True)
@@ -160,11 +158,7 @@ def list_entries(
     json_mode: bool = typer.Option(False, "--json", help="Output as JSON array"),
 ):
     """List all (or filtered) memory entries."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     entries = read_all_entries()
     if tag:
@@ -203,11 +197,7 @@ def recall(
     ),
 ):
     """Search memories by query and output markdown."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     mmr_on, mmr_lam = _read_mmr_config()
     if no_mmr:
@@ -290,11 +280,7 @@ def context(
     The UserPromptSubmit hook installed by ``agmem init --install-hook`` uses
     ``--session`` automatically; CI / one-shot uses can leave it off.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     if reset_session_flag:
         from .ask import reset_session as _reset
@@ -358,11 +344,7 @@ def forget(
     revive: bool = typer.Option(False, "--revive", help="Revive a previously forgotten entry"),
 ):
     """Soft-delete a memory entry (sets deleted_at; search/recall hide it)."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     matches = find_entries_by_id_prefix(entry_id)
     if not matches:
@@ -416,11 +398,7 @@ def hot(
     from current memories. Designed to be regenerated on every commit by the post-commit
     git hook.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     if refresh:
         result = run_hot_refresh(budget_chars=budget)
@@ -474,11 +452,7 @@ def review(
     json_mode: bool = typer.Option(False, "--json", help="Output report as JSON (counts + entry id lists)"),
 ):
     """Show drifted, missing-source, stale, and duplicate entries (read-only)."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     report = run_review(stale_days=stale_days)
 
@@ -541,11 +515,7 @@ def testq(
     With --record [<name>]: capture current top-N rankings to .agmem/testq-snapshots/.
     With --diff [<name>]: compare current rankings against a saved snapshot, surface drift.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     if record is not None:
         snap_path, snap_or_err = record_snapshot(record or None)
@@ -678,11 +648,7 @@ def eval_agmem(
 
     Without --collect or --pairs-file, extracts and scores in one shot (live).
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     since_val = since if since else None
     ks = [3, 5, 8, 10, 20]
@@ -761,11 +727,7 @@ def eval_agmem_sweep(
     Monkey-patches search module constants, re-scores all pairs, and reports
     the best parameter combo per the chosen metric.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     if not param:
         typer.echo("Pass at least one --param (e.g. --param 'kind_boost.rule=2,3,4').", err=True)
@@ -829,11 +791,7 @@ def verify(
     ),
 ):
     """Re-hash referenced files; mark entries as verified or drifted."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     if not id_prefix and not all_:
         typer.echo("Pass an id prefix or --all.", err=True)
@@ -877,11 +835,7 @@ def index(
     ),
 ):
     """Index repository files into memory (deterministic, replaceable)."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     added, removed, files = run_index(cwd=path, scope=scope)
     suffix = f" (replaced {removed} old index entries)" if removed else ""
@@ -937,11 +891,7 @@ def suggest_aliases(
     from .indexer import _load_gitignore, _should_skip
     from .parsers.glossary import extract_aliases, is_glossary_file
 
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     root = _config.find_repo_root()
     spec = _load_gitignore(root)
@@ -1031,11 +981,7 @@ def stats(
     Designed for scripted loops (e.g., autoresearch-style "propose memory edit,
     measure, accept-or-revert"). Output shape is stable across versions.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     snapshot = collect_stats()
     if json_mode:
@@ -1119,11 +1065,7 @@ def update(
     ),
 ):
     """Diff-aware partial reindex: only re-analyze changed files since <ref>."""
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     result = run_update(since_ref=since)
     if "error" in result:
@@ -1204,11 +1146,7 @@ def flush():
     Useful for cron jobs or CI workflows that want a periodic flush without
     a long-running process.
     """
-    try:
-        read_config()
-    except Exception:
-        typer.echo("Not initialized. Run `agmem init` first.", err=True)
-        raise typer.Exit(code=1)
+    _require_initialized()
 
     result = apply_queue_once()
     events = result.get("events", 0)

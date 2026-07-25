@@ -224,6 +224,16 @@ def ensure_agmem_dir(cwd: str | None = None) -> Path:
     return path
 
 
+def is_initialized(cwd: str | None = None) -> bool:
+    """True iff `agmem init` has been run here (config.yaml exists).
+
+    ``read_config()`` deliberately returns ``{}`` for missing config (many
+    internal callers want defaults), so CLI commands must gate on THIS
+    function — not on read_config() raising, which it never does.
+    """
+    return config_path(cwd).exists()
+
+
 def read_config(cwd: str | None = None) -> dict[str, str | int]:
     cfg_file = config_path(cwd)
     if cfg_file.exists():

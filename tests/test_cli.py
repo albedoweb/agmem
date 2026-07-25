@@ -13,6 +13,7 @@ runner = CliRunner()
 
 def _patch_config(monkeypatch, tmpdir: str):
     tdp = Path(tmpdir)
+    monkeypatch.setattr("agmem.cli.is_initialized", lambda: True)
     monkeypatch.setattr(
         "agmem.cli.init_config", lambda project_name=None: None
     )
@@ -53,6 +54,9 @@ def _patch_config(monkeypatch, tmpdir: str):
 
 def _with_memory(monkeypatch, tmpdir: str, entries_data: list[dict]):
     """Set up memories in the temp dir and patch read/append accordingly."""
+    # These tests exercise command logic, not init discovery — satisfy the
+    # is_initialized() gate explicitly (the host checkout may have no .agmem).
+    monkeypatch.setattr("agmem.cli.is_initialized", lambda: True)
     tdp = Path(tmpdir)
     (tdp / ".agmem").mkdir(exist_ok=True)
     from agmem.store import MemoryEntry
@@ -113,25 +117,27 @@ def test_init(monkeypatch):
             "agmem.cli.init_config",
             lambda project_name=None: None,
         )
+        monkeypatch.setattr("agmem.cli.is_initialized", lambda: False)
         result = runner.invoke(app, ["init", "--project", "test"])
         assert result.exit_code == 0
 
 
 def test_init_idempotent(monkeypatch):
+    """Re-running init on an initialized repo is NOT an error (exit 0) —
+    setup scripts and CI must be able to call it unconditionally."""
     with tempfile.TemporaryDirectory() as tmpdir:
         _patch_config(monkeypatch, tmpdir)
         result = runner.invoke(app, ["init"])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
+        assert "already initialized" in result.output
 
 
 def test_remember_without_init(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
-        monkeypatch.setattr(
-            "agmem.cli.read_config",
-            lambda: (_ for _ in ()).throw(Exception("not found")),
-        )
+        monkeypatch.setattr("agmem.cli.is_initialized", lambda: False)
         result = runner.invoke(app, ["remember", "some text"])
         assert result.exit_code == 1
+        assert "Not initialized" in result.output
 
 
 def test_remember_and_list(monkeypatch):

@@ -20,6 +20,7 @@ runner = CliRunner()
 
 
 def _patch_root(monkeypatch, root: Path) -> None:
+    monkeypatch.setattr("agmem.cli.is_initialized", lambda: True)
     monkeypatch.setattr("agmem.config.find_repo_root", lambda cwd=None: root)
     monkeypatch.setattr("agmem.config.agmem_dir", lambda cwd=None: root / ".agmem")
     monkeypatch.setattr(
