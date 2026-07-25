@@ -20,8 +20,8 @@ the result. Before calling, rewrite the query:
 
 - Drop articles, prepositions, wh-words (`the`, `for`, `in`, `how`, `where`).
 - Use noun-phrase fragments, 3-7 tokens.
-- Prefer **identifiers**: file basenames (`waf-alb-external`), resource names
-  (`rds_proxy`, `my-truv`), module dirs, ticket IDs (`INF-3728`). Keep snake_case
+- Prefer **identifiers**: file basenames (`waf-alb-public`), resource names
+  (`rds_proxy`, `payments-api`), module dirs, ticket IDs (`PROJ-1234`). Keep snake_case
   / kebab-case as they appear in code.
 - If you can guess a likely filename or module, include the basename token.
 
@@ -30,8 +30,8 @@ Examples:
   ✗ `agmem context "where are the Grafana Slack contact points and templates"`
   ✓ `agmem context "grafana-contact-points slack notification templates"`
 
-  ✗ `agmem context "Enable WAF in monitoring mode for mytruv public ALB"`
-  ✓ `agmem context "waf-alb-external mytruv istio-gateway-external count"`
+  ✗ `agmem context "Enable WAF in monitoring mode for storefront public ALB"`
+  ✓ `agmem context "waf-alb-public storefront ingress-gateway-external count"`
 
   ✗ `agmem context "how are secrets loaded and the config refresh endpoint"`
   ✓ `agmem context "secrets config refresh endpoint"`

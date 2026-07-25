@@ -85,9 +85,9 @@ class TestIsAgmemContextCall:
         assert result == ("find the config file", None)
 
     def test_with_tag(self):
-        e = _make_bash_cmd('agmem context "find config" --tag mytruv -n 8')
+        e = _make_bash_cmd('agmem context "find config" --tag billing -n 8')
         result = is_agmem_context_call(e)
-        assert result == ("find config", "mytruv")
+        assert result == ("find config", "billing")
 
     def test_piped_output(self):
         e = _make_bash_cmd('agmem context "find config" -n 5 2>&1 | head -100')
@@ -138,8 +138,8 @@ class TestQueryRegex:
 
 class TestTagRegex:
     def test_extract_tag(self):
-        m = _TAG_RE.search('agmem context "x" --tag mytruv -n 8')
-        assert m and m.group(1) == "mytruv"
+        m = _TAG_RE.search('agmem context "x" --tag billing -n 8')
+        assert m and m.group(1) == "billing"
 
     def test_no_tag(self):
         assert _TAG_RE.search('agmem context "x" -n 5') is None
@@ -313,7 +313,7 @@ class TestExtractEvalPairs:
     def test_tag_extraction(self, monkeypatch, tmp_path):
         events = [
             _make_run_started("/repo"),
-            _make_bash_cmd('agmem context "find config" --tag mytruv'),
+            _make_bash_cmd('agmem context "find config" --tag billing'),
             _make_read("/repo/src/a.py"),
         ]
         self._write_session(tmp_path, events)
@@ -321,7 +321,7 @@ class TestExtractEvalPairs:
 
         pairs = extract_eval_pairs()
         assert len(pairs) == 1
-        assert pairs[0].tag == "mytruv"
+        assert pairs[0].tag == "billing"
 
     def test_cwd_filter(self, monkeypatch, tmp_path):
         events = [
@@ -432,13 +432,13 @@ class TestEvalReport:
         assert report.mean_mrr() == 0.5
 
     def test_to_csv_rows(self):
-        pair = EvalPair(run_id="a", query="q1", cwd="/r", turn=0, gold_files={"f1.py"}, window_size=20, tag="mytruv")
+        pair = EvalPair(run_id="a", query="q1", cwd="/r", turn=0, gold_files={"f1.py"}, window_size=20, tag="billing")
         score = EvalScore(pair=pair, top_k=["f1.py", "f2.py"], hit_at={5: True}, recall_at={5: 1.0}, mrr=1.0)
         report = EvalReport(pairs=[pair], scores=[score], ks=[5])
         rows = report.to_csv_rows()
         assert len(rows) == 1
         assert rows[0]["run_id"] == "a"
-        assert rows[0]["tag"] == "mytruv"
+        assert rows[0]["tag"] == "billing"
         assert rows[0]["hit_at_5"] is True
         assert rows[0]["recall_at_5"] == 1.0
         assert "f1.py" in rows[0]["gold_files"]

@@ -104,16 +104,16 @@ def test_empty_tf():
 
 
 def test_extract_header_basic():
-    content = '''# WAF in monitoring (count) mode for the public istio-gateway-external ALB.
+    content = '''# WAF in monitoring (count) mode for the public ingress-gateway-external ALB.
 # All rules start with override_action=count so we can observe what would fire.
 
 resource "aws_wafv2_web_acl" "external" {
-  name = "mytruv-prod"
+  name = "storefront-prod"
 }
 '''
     h = extract_header(content)
     assert "WAF in monitoring (count) mode" in h
-    assert "istio-gateway-external" in h
+    assert "ingress-gateway-external" in h
     assert "override_action=count" in h
     assert "aws_wafv2_web_acl" not in h
 

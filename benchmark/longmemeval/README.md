@@ -21,7 +21,7 @@ python benchmark/longmemeval/download.py --revision <hf-commit-sha>
 # 2a. BM25-only run (fast, no extras)
 python benchmark/longmemeval/run.py --top-k 3,5,8,10,20 --out results/bm25
 
-# 2b. Hybrid run (matches the shipped repo default of α=0.3; needs
+# 2b. Hybrid run (opt-in mode, recommended α=0.3; needs
 #     `pip install 'agmem[hybrid]'` — sentence-transformers + numpy)
 python benchmark/longmemeval/run.py \
   --top-k 3,5,8,10,20 --hybrid-alpha 0.3 \
@@ -36,7 +36,7 @@ agmem eval-longmemeval --top-k 3,5,8,10,20 --hybrid-alpha 0.3 --out results/base
 500 questions, per-question corpus (~48 distractor sessions per question,
 median 48), no LLM calls.
 
-### Headline: **hybrid α=0.3** (matches shipped repo default)
+### Headline: **hybrid α=0.3** (opt-in — `[hybrid]` extra + config flag; off by default)
 
 | K  | recall (strict) | recall_any | NDCG   |
 |---:|----------------:|-----------:|-------:|

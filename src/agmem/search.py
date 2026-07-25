@@ -26,6 +26,29 @@ from .aliases import (
 )
 from .store import MemoryEntry
 
+# Meta-vocabulary that describes WHAT you're doing to the code (verbs) or
+# generic wrappers around a task (nouns), not WHICH code you're doing it to.
+# Queries composed entirely of these tokens match half the repo → BM25 can't
+# discriminate → top-K is noise. Detected by ``is_low_signal_query`` and
+# surfaced as a CLI warning so the agent rewrites around identifiers.
+META_QUERY_TOKENS: set[str] = {
+    # meta-verbs: describe the activity, not the target
+    "review", "reviewing", "check", "checking", "refactor", "refactoring",
+    "investigate", "investigating", "debug", "debugging", "fix", "fixing",
+    "look", "looking", "understand", "understanding", "audit", "auditing",
+    "examine", "examining", "explore", "exploring", "inspect", "inspecting",
+    "read", "reading", "learn", "learning", "analyze", "analyzing",
+    "help", "helping", "implement", "implementing",
+    # meta-nouns: describe the wrapper, not the content
+    "pull", "request", "pr", "prs", "code", "codebase", "repo", "repository",
+    "changes", "diff", "issue", "issues", "bug", "bugs", "problem", "problems",
+    "task", "tasks", "thing", "things", "stuff", "part", "parts", "way",
+    "feature", "features",
+    # very-common near-stopwords that survive STOP_WORDS filter
+    "new", "old", "existing", "current", "latest", "recent",
+}
+
+
 STOP_WORDS: set[str] = {
     # Articles, prepositions, conjunctions
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
@@ -153,6 +176,58 @@ def _tokenize(text: str) -> list[str]:
     if _STEMMING_ENABLED:
         kept = [_stem(t) for t in kept]
     return kept
+
+
+def _has_identifier_shape(raw_token: str) -> bool:
+    """A token that looks like a code identifier or ticket ID — the kind of
+    thing agmem indexes richly. If a query has any of these, BM25 has real
+    signal to rank with; otherwise the query is likely generic prose."""
+    if not raw_token:
+        return False
+    if any(c in raw_token for c in "_-./"):        # snake_case, kebab-case, path, module.dotted
+        return True
+    if len(raw_token) >= 2 and raw_token.isupper(): # ACRONYM (AWS, ALB, RDS)
+        return True
+    if any(c.isdigit() for c in raw_token) and any(c.isalpha() for c in raw_token):
+        return True                                 # s3, ec2, abc123 — mixed alnum
+    if (len(raw_token) >= 2 and raw_token[0].isupper()
+            and any(c.islower() for c in raw_token[1:])
+            and any(c.isupper() for c in raw_token[1:])):
+        return True                                 # CamelCase
+    return False
+
+
+def is_low_signal_query(query: str) -> tuple[bool, str]:
+    """Detect queries that ask agmem for what the agent is DOING (review,
+    refactor, investigate) rather than WHICH code it's doing it to. Such
+    queries have no identifier-shape tokens, so BM25 can't discriminate.
+
+    Returns ``(is_low_signal, reason)``. ``reason`` is empty when the query
+    passes. Conservative — only warns when we're confident (identifier-free
+    AND ≥2 meta-tokens AND query has ≥3 tokens), to avoid false-positive
+    spam.
+
+    Not called during search itself: this is a CLI-side pre-flight hint,
+    surfaced to the caller so a *human-readable* nudge lands in the terminal
+    or agent transcript without changing retrieval semantics.
+    """
+    raw_tokens = query.split()
+    if len(raw_tokens) < 3:
+        return (False, "")
+    if any(_has_identifier_shape(t.strip(",.;:!?()[]{}\"'")) for t in raw_tokens):
+        return (False, "")
+    lower = [t.strip(",.;:!?()[]{}\"'").lower() for t in raw_tokens]
+    meta_hits = [t for t in lower if t in META_QUERY_TOKENS]
+    if len(meta_hits) < 2:
+        return (False, "")
+    reason = (
+        f"query is meta-word only ({', '.join(sorted(set(meta_hits))[:4])}) "
+        "with no identifier-shape tokens — BM25 has nothing to rank on. "
+        "Rewrite around identifiers from the diff/task: module names, "
+        "resource types, function names, ticket IDs (e.g. PROJ-1234, "
+        "waf-alb-public, rds_proxy, precompute_income)."
+    )
+    return (True, reason)
 
 
 def _build_corpus_text(entry: MemoryEntry) -> str:
@@ -354,25 +429,39 @@ def search(
     ]
 
     # Hybrid fusion — only when both opted in (alpha > 0) AND an embedder is wired.
+    # Any failure (missing model, flaky network on first load, embedding-dim
+    # mismatch after a model swap) degrades gracefully to pure BM25 for this
+    # query rather than crashing the caller.
     if hybrid_alpha > 0 and embedder is not None:
-        from . import embeddings as _emb
-        entry_vecs = embedder.embed_texts([e.text for e in entries])
-        query_vec = embedder.embed_query(expanded_query)
-        # Vectors are L2-normalized → dot product = cosine similarity.
-        cosines = (entry_vecs @ query_vec).tolist()
-        scores = _emb.fuse_scores(scores, cosines, hybrid_alpha)
+        try:
+            from . import embeddings as _emb
+            entry_vecs = embedder.embed_texts([e.text for e in entries])
+            query_vec = embedder.embed_query(expanded_query)
+            # Vectors are L2-normalized → dot product = cosine similarity.
+            cosines = (entry_vecs @ query_vec).tolist()
+            scores = _emb.fuse_scores(scores, cosines, hybrid_alpha)
+        except Exception as exc:
+            import sys
+            print(f"[agmem] hybrid embedding failed ({type(exc).__name__}: {exc}); "
+                  f"falling back to BM25 for this query.", file=sys.stderr)
 
     ranked = sorted(zip(entries, scores), key=lambda x: x[1], reverse=True)
 
     # Cross-encoder rerank — only over the top-K pool. Re-orders ranks 0..K-1
-    # by relevance score; ranks K+ keep their original BM25/hybrid order.
+    # by relevance score; ranks K+ keep their original BM25/hybrid order. Same
+    # graceful-degradation contract as the hybrid block above.
     if rerank_top_k > 0 and reranker is not None and len(ranked) > 1:
-        k = min(rerank_top_k, len(ranked))
-        pool_entries = [e for e, _ in ranked[:k]]
-        ce_scores = reranker.score(query, [e.text for e in pool_entries])
-        reranked = sorted(zip(pool_entries, ce_scores),
-                          key=lambda x: x[1], reverse=True)
-        ranked = reranked + ranked[k:]
+        try:
+            k = min(rerank_top_k, len(ranked))
+            pool_entries = [e for e, _ in ranked[:k]]
+            ce_scores = reranker.score(query, [e.text for e in pool_entries])
+            reranked = sorted(zip(pool_entries, ce_scores),
+                              key=lambda x: x[1], reverse=True)
+            ranked = reranked + ranked[k:]
+        except Exception as exc:
+            import sys
+            print(f"[agmem] rerank failed ({type(exc).__name__}: {exc}); "
+                  f"keeping BM25/hybrid order.", file=sys.stderr)
 
     if mmr_enabled and len(ranked) > 1 and top_n > 0:
         pool = ranked[: max(top_n * 2, DEFAULT_MMR_POOL_SIZE)]

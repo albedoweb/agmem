@@ -263,3 +263,92 @@ class TestStem:
         assert _STEMMING_ENABLED
         assert "sync" in _tokenize("the syncing logic")
         assert "sync" in _tokenize("Use sync to update")
+
+
+class TestLowSignalQueryDetection:
+    """The real-world query that motivated this detector:
+    `agmem context 'review infrastructure pull request 2026' -n 8 --session`
+    was auto-approved and repeatedly executed with no identifier in the query,
+    returning noise. Warn but don't block — the agent's next call can improve."""
+
+    def test_the_actual_bad_query_triggers(self):
+        from agmem.search import is_low_signal_query
+        low, why = is_low_signal_query("review infrastructure pull request 2026")
+        assert low
+        assert "meta-word" in why
+        assert "identifier" in why.lower()
+
+    def test_review_pr_generic_triggers(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review pull request code changes")
+        assert low
+
+    def test_fix_bug_in_code_triggers(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("fix bug in code")
+        assert low
+
+    def test_investigate_issue_triggers(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("investigate issue in existing feature")
+        assert low
+
+    # ---- passes (identifier present) ----
+
+    def test_snake_case_passes(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review precompute_income function")
+        assert not low  # snake_case identifier saves it
+
+    def test_kebab_case_passes(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review waf-alb-public module changes")
+        assert not low
+
+    def test_ticket_id_passes(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review PR for PROJ-1234")
+        assert not low  # PROJ-1234 has both digit+alpha and a hyphen
+
+    def test_acronym_passes(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review RDS proxy changes")
+        assert not low  # RDS acronym
+
+    def test_camelcase_passes(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review FastAPI middleware changes")
+        assert not low
+
+    def test_mixed_alnum_passes(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("review s3 bucket configuration changes")
+        assert not low  # 's3' has digit+alpha
+
+    # ---- short queries never warn ----
+
+    def test_two_token_query_no_warn(self):
+        from agmem.search import is_low_signal_query
+        # Not enough context — could be a legitimate identifier query.
+        low, _ = is_low_signal_query("review code")
+        assert not low
+
+    def test_one_token_ticket_no_warn(self):
+        from agmem.search import is_low_signal_query
+        low, _ = is_low_signal_query("PROJ-1234")
+        assert not low
+
+    # ---- only one meta-token isn't enough (avoid FP spam) ----
+
+    def test_single_meta_token_no_warn(self):
+        from agmem.search import is_low_signal_query
+        # Only one meta-token ("review") + two plain nouns. Borderline, not warned.
+        low, _ = is_low_signal_query("review payments architecture")
+        assert not low
+
+    def test_punctuation_stripped_before_check(self):
+        from agmem.search import is_low_signal_query
+        # "PR," has trailing comma; identifier check should still see it as acronym.
+        low, _ = is_low_signal_query("review PR, code changes")
+        # PR is 2-char uppercase → acronym → identifier shape → passes
+        assert not low

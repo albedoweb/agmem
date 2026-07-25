@@ -2,7 +2,7 @@
 
 Maps common service names to their cloud provider resource names (and vice versa).
 Built-ins are generic (cloud + framework names). Project-specific aliases
-(``core → citadel-backend`` etc.) live in ``.agmem/aliases.yaml`` and are merged
+(``core → payments-backend`` etc.) live in ``.agmem/aliases.yaml`` and are merged
 on top at load time.
 """
 

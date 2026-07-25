@@ -1,7 +1,7 @@
 """YAML (.yaml/.yml) parser — flattens a document into dotted key-paths.
 
 Each scalar leaf becomes a ``key`` block named by its dotted path
-(``mytruv.env.MYTRUV_INSIGHTS``) with the value as a label, so BM25 can match on
+(``storefront.env.FEATURE_INSIGHTS``) with the value as a label, so BM25 can match on
 both the key identifiers and the value. Works for any YAML — Helm
 ``values.yaml``, k8s manifests, CI configs, docker-compose. Multi-document
 streams (``---`` separated) are each walked. List items are collapsed: the

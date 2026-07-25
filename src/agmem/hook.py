@@ -52,9 +52,12 @@ def _count_user_turns_since_last_marker(transcript_path: str | None) -> int:
 
 
 def _build_context_block(prompt: str, cwd: str | None) -> str | None:
+    # --session: successive hook injections in one conversation demote entries
+    # the agent has already seen, so each injected block surfaces new context
+    # instead of repeating the same top hits.
     try:
         result = subprocess.run(
-            ["agmem", "context", prompt, "-n", str(CONTEXT_LIMIT)],
+            ["agmem", "context", prompt, "-n", str(CONTEXT_LIMIT), "--session"],
             capture_output=True,
             text=True,
             timeout=CONTEXT_TIMEOUT_SEC,

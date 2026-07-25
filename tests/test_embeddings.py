@@ -167,6 +167,50 @@ class TestEmbedderDedup:
         assert len(emb2._index) == 2
 
 
+class TestSearchGracefulDegradation:
+    """If the embedder or reranker throws mid-query (e.g. HF Hub DNS blip on
+    first model load, or a broken cache), search() must fall back to BM25
+    for that query rather than propagating the exception."""
+
+    def test_broken_embedder_falls_back_to_bm25(self, capsys):
+        from agmem.search import search
+        from agmem.store import MemoryEntry
+
+        class BrokenEmbedder:
+            def embed_texts(self, texts):
+                raise OSError("nodename nor servname provided, or not known")
+            def embed_query(self, q):
+                raise OSError("nodename nor servname provided, or not known")
+
+        entries = [
+            MemoryEntry(id="a", ts="t", text="alpha content", source="index"),
+            MemoryEntry(id="b", ts="t", text="beta content", source="index"),
+        ]
+        results = search("alpha", entries, top_n=2,
+                         hybrid_alpha=0.3, embedder=BrokenEmbedder())
+        assert results[0][0].id == "a"
+        err = capsys.readouterr().err
+        assert "hybrid embedding failed" in err
+
+    def test_broken_reranker_falls_back_to_bm25_order(self, capsys):
+        from agmem.search import search
+        from agmem.store import MemoryEntry
+
+        class BrokenReranker:
+            def score(self, query, docs):
+                raise RuntimeError("Cannot send a request, as the client has been closed")
+
+        entries = [
+            MemoryEntry(id="a", ts="t", text="alpha content", source="index"),
+            MemoryEntry(id="b", ts="t", text="alpha beta", source="index"),
+        ]
+        results = search("alpha", entries, top_n=2,
+                         rerank_top_k=2, reranker=BrokenReranker())
+        assert len(results) == 2
+        err = capsys.readouterr().err
+        assert "rerank failed" in err
+
+
 class TestSearchRerankIntegration:
     """Cross-encoder rerank wiring — mock the Reranker so this runs without
     the optional extras."""

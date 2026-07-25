@@ -13,3 +13,4 @@ internal-docs/
 # Local agmem state (memories, indexes, golden-set archives) — never push.
 .agmem/
 .DS_Store
+*.egg-info/

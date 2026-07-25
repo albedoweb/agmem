@@ -4,15 +4,15 @@ from agmem.parsers import analyze_file, registered_extensions
 from agmem.parsers.yaml import analyze, extract_header, extract_tags, summary
 
 HELM_VALUES = """\
-# Default values for mytruv.
+# Default values for storefront.
 # Declare variables to be passed into your templates.
 replicaCount: 2
 image:
-  repository: ghcr.io/truv/mytruv
+  repository: ghcr.io/northwind/storefront
   tag: "1.4.2"
-mytruv:
+storefront:
   env:
-    MYTRUV_INSIGHTS: "true"
+    FEATURE_INSIGHTS: "true"
     LOG_LEVEL: info
 resources:
   limits:
@@ -47,19 +47,19 @@ class TestAnalyze:
     def test_flattens_nested_to_dotted_paths(self):
         names = {b.name for b in analyze(HELM_VALUES)}
         assert "image.repository" in names
-        assert "mytruv.env.MYTRUV_INSIGHTS" in names
+        assert "storefront.env.FEATURE_INSIGHTS" in names
         assert "resources.limits.memory" in names
 
     def test_scalar_value_kept_as_label(self):
         blocks = {b.name: b for b in analyze(HELM_VALUES)}
-        assert blocks["mytruv.env.MYTRUV_INSIGHTS"].labels == ["true"]
-        assert blocks["image.repository"].labels == ["ghcr.io/truv/mytruv"]
+        assert blocks["storefront.env.FEATURE_INSIGHTS"].labels == ["true"]
+        assert blocks["image.repository"].labels == ["ghcr.io/northwind/storefront"]
 
     def test_full_name_carries_path_and_value(self):
         # The index body is built from block.full_name, so the dotted path and
         # value must both appear there for BM25 to match.
         fn = {b.name: b.full_name for b in analyze(HELM_VALUES)}
-        assert fn["mytruv.env.MYTRUV_INSIGHTS"] == "key mytruv.env.MYTRUV_INSIGHTS (true)"
+        assert fn["storefront.env.FEATURE_INSIGHTS"] == "key storefront.env.FEATURE_INSIGHTS (true)"
 
     def test_list_of_scalars_joined(self):
         blocks = {b.name: b for b in analyze(HELM_VALUES)}
@@ -96,7 +96,7 @@ class TestSummary:
         s = summary(analyze(HELM_VALUES))
         assert s.startswith("YAML file — ")
         assert "top-level:" in s
-        assert "image" in s and "mytruv" in s
+        assert "image" in s and "storefront" in s
 
     def test_empty(self):
         assert summary([]) == "YAML file"
@@ -105,7 +105,7 @@ class TestSummary:
 class TestExtractHeader:
     def test_leading_comment_block(self):
         h = extract_header(HELM_VALUES)
-        assert h.startswith("Default values for mytruv.")
+        assert h.startswith("Default values for storefront.")
 
     def test_stops_at_first_key(self):
         h = extract_header("# one\nkey: v\n# two")
@@ -120,7 +120,7 @@ class TestExtractHeader:
 
 class TestExtractTags:
     def test_helm_values(self):
-        tags = set(extract_tags("charts/mytruv/values.yaml", analyze(HELM_VALUES)))
+        tags = set(extract_tags("charts/storefront/values.yaml", analyze(HELM_VALUES)))
         assert "yaml" in tags
         assert "helm" in tags
         assert "values" in tags
@@ -147,8 +147,8 @@ class TestRegistration:
 
     def test_analyze_file_dispatches_helm_values(self):
         # Helm-style bare `.values` override file (YAML content, no .yaml suffix)
-        fa = analyze_file("apps/helm/truv-mcp-server/dev.values",
-                          "namespace: platform-dev\nname: my-truv-mcp\nenv: dev\n")
+        fa = analyze_file("apps/helm/northwind-mcp-server/dev.values",
+                          "namespace: platform-dev\nname: northwind-mcp\nenv: dev\n")
         assert fa is not None
         assert fa.ext == "values"
         assert any(b.name == "namespace" for b in fa.blocks)
@@ -158,7 +158,7 @@ class TestRegistration:
         assert fa is not None
         assert fa.ext == "yaml"
         assert fa.header_comment.startswith("Default values")
-        assert any(b.name == "mytruv.env.MYTRUV_INSIGHTS" for b in fa.blocks)
+        assert any(b.name == "storefront.env.FEATURE_INSIGHTS" for b in fa.blocks)
 
     def test_analyze_file_dispatches_yml(self):
         fa = analyze_file("config.yml", "a:\n  b: 1")

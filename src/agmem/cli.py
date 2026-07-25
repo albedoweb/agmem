@@ -230,7 +230,7 @@ def context(
     tag: Optional[str] = typer.Option(
         None, "--tag", "-t",
         help="Restrict retrieval to entries carrying this tag. Useful when the "
-             "agent knows the relevant area (e.g. --tag mytruv) and wants to "
+             "agent knows the relevant area (e.g. --tag billing) and wants to "
              "exclude tangentially-matching content from other subsystems.",
     ),
     session: bool = typer.Option(
@@ -313,6 +313,15 @@ def context(
             err=True,
         )
         raise typer.Exit(code=1)
+
+    # Pre-flight: warn (don't block) if the query is meta-word only. Landing
+    # this as stderr is enough for an agent to notice and reformulate on
+    # its next call; no need to abort the current call. Silenced under
+    # --json so scripted callers still get clean stdout.
+    from .search import is_low_signal_query
+    low_signal, why = is_low_signal_query(task)
+    if low_signal and not json_mode:
+        typer.echo(f"[agmem] warning: {why}", err=True)
 
     mmr_on, mmr_lam = _read_mmr_config()
     if no_mmr:

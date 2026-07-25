@@ -19,11 +19,11 @@ def test_load_user_aliases_missing(tmp_path: Path):
 
 def test_load_user_aliases_simple(tmp_path: Path):
     (tmp_path / "aliases.yaml").write_text(
-        "core:\n  - citadel-backend\n  - citadel_backend\n"
+        "core:\n  - payments-backend\n  - payments_backend\n"
         "backend: dashboard-backend\n"
     )
     out = load_user_aliases(tmp_path)
-    assert out["core"] == ["citadel-backend", "citadel_backend"]
+    assert out["core"] == ["payments-backend", "payments_backend"]
     assert out["backend"] == ["dashboard-backend"]
 
 
@@ -39,12 +39,12 @@ def test_load_user_aliases_wrong_shape(tmp_path: Path):
 
 def test_merge_aliases_extends_not_replaces():
     builtin = {"queue": ["sqs"], "redis": ["elasticache"]}
-    user = {"queue": ["rabbitmq"], "core": ["citadel-backend"]}
+    user = {"queue": ["rabbitmq"], "core": ["payments-backend"]}
     merged = merge_aliases(builtin, user)
     assert "sqs" in merged["queue"]
     assert "rabbitmq" in merged["queue"]
     assert merged["redis"] == ["elasticache"]
-    assert merged["core"] == ["citadel-backend"]
+    assert merged["core"] == ["payments-backend"]
 
 
 def test_merge_aliases_dedups():
@@ -54,9 +54,9 @@ def test_merge_aliases_dedups():
 
 
 def test_expand_query_uses_supplied_aliases():
-    aliases = {"core": ["citadel-backend"]}
+    aliases = {"core": ["payments-backend"]}
     out = expand_query("how does core work", aliases=aliases)
-    assert "citadel-backend" in out
+    assert "payments-backend" in out
     assert "core" in out
 
 
@@ -128,8 +128,8 @@ def test_filename_boost_lifts_specific_file_over_long_doc():
     )
     long_readme = _entry(
         text=(
-            "Project readme. File `README.md` — Markdown doc — \"truv-context\", "
-            "15 sections. Items: title truv-context; section What This Is; "
+            "Project readme. File `README.md` — Markdown doc — \"northwind-context\", "
+            "15 sections. Items: title northwind-context; section What This Is; "
             "section Setup; section How Cross-Repo Access Works; section How "
             "Slash Commands Work; subsection /new-provider — Scaffold a crawler "
             "provider; section Engineering Commands; subsection /debug-task; "
@@ -146,27 +146,27 @@ def test_filename_boost_lifts_specific_file_over_long_doc():
 
 
 def test_aliases_lift_aliased_doc_over_unrelated():
-    """With the project alias core→citadel-backend, a query for 'core' must
-    surface citadel-backend.md ahead of an unrelated doc."""
+    """With the project alias core→payments-backend, a query for 'core' must
+    surface payments-backend.md ahead of an unrelated doc."""
     backend = _entry(
-        text='File `services/citadel-backend.md` — Markdown doc — "citadel_backend", 12 sections.',
-        source_ref="services/citadel-backend.md",
+        text='File `services/payments-backend.md` — Markdown doc — "payments_backend", 12 sections.',
+        source_ref="services/payments-backend.md",
     )
     other = _entry(
         text="Random doc that mentions Core in passing once.",
         source_ref="docs/random.md",
     )
-    aliases = {"core": ["citadel-backend", "citadel_backend"]}
+    aliases = {"core": ["payments-backend", "payments_backend"]}
     results = search("core", [backend, other], top_n=2, aliases=aliases)
-    assert results[0][0].source_ref == "services/citadel-backend.md"
+    assert results[0][0].source_ref == "services/payments-backend.md"
 
 
 def test_search_without_aliases_misses_renamed_concept():
     """Sanity check: without alias support, the same query falls through.
     This documents the value the alias layer provides."""
     backend = _entry(
-        text='File `services/citadel-backend.md` — Markdown doc — "citadel_backend", 12 sections.',
-        source_ref="services/citadel-backend.md",
+        text='File `services/payments-backend.md` — Markdown doc — "payments_backend", 12 sections.',
+        source_ref="services/payments-backend.md",
     )
     results = search("core", [backend], top_n=1, aliases={})
     # No alias → token "core" doesn't appear in entry → score is 0.

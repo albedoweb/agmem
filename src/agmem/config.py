@@ -81,18 +81,32 @@ the result. Before calling, rewrite the query:
 
 - Drop articles, prepositions, wh-words (`the`, `for`, `in`, `how`, `where`).
 - Use noun-phrase fragments, 3-7 tokens.
-- Prefer **identifiers**: file basenames (`waf-alb-external`), resource names
-  (`rds_proxy`, `my-truv`), module dirs, ticket IDs (`INF-3728`). Keep snake_case
+- Prefer **identifiers**: file basenames (`waf-alb-public`), resource names
+  (`rds_proxy`, `payments-api`), module dirs, ticket IDs (`PROJ-1234`). Keep snake_case
   / kebab-case as they appear in code.
 - If you can guess a likely filename or module, include the basename token.
+
+**Query the noun, not the verb.** BM25 has nothing to rank on if every token
+describes what you're *doing* (`review`, `refactor`, `investigate`, `debug`,
+`check`, `fix`) or the wrapper around a task (`pull request`, `code`,
+`changes`, `issue`). Query the specific *content* of the work.
+
+  ✗ `agmem context "review infrastructure pull request 2026"` — meta-verb + meta-nouns, matches half the repo
+  ✓ `agmem context "waf-alb-public storefront ingress-gateway-external count"` — resources from the diff
+  ✓ `agmem context "PROJ-1234 rds_proxy"` — ticket + module
+
+For a **PR / diff review**: first list the changed files or resource names,
+then query with those identifiers. Same for a **Sentry / alert investigation**:
+extract function names, exception classes, and module paths from the stack
+trace and query with those.
 
 Examples:
 
   ✗ `agmem context "where are the Grafana Slack contact points and templates"`
   ✓ `agmem context "grafana-contact-points slack notification templates"`
 
-  ✗ `agmem context "Enable WAF in monitoring mode for mytruv public ALB"`
-  ✓ `agmem context "waf-alb-external mytruv istio-gateway-external count"`
+  ✗ `agmem context "Enable WAF in monitoring mode for storefront public ALB"`
+  ✓ `agmem context "waf-alb-public storefront ingress-gateway-external count"`
 
   ✗ `agmem context "how are secrets loaded and the config refresh endpoint"`
   ✓ `agmem context "secrets config refresh endpoint"`
@@ -100,6 +114,11 @@ Examples:
 If the first call returns weak results, **refine the tokens — don't retype the
 natural-language form.** Try different basenames, snake_case variants, or the
 identifiers you noticed in the top-K text.
+
+If agmem prints `[agmem] warning: query is meta-word only ...`, take the hint:
+your query didn't include any identifier the index could latch onto. Stop,
+inspect the task for concrete names (files, modules, resources, ticket IDs),
+and rerun.
 
 ### Treating the output
 

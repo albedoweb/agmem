@@ -51,8 +51,9 @@ rare cases that need bulk updates (rename, reindex).
 
 ## How retrieval works
 
-The pipeline is intentionally lexical — no embeddings, no neural inference, no
-network calls.
+The pipeline is lexical-first — BM25, no network calls. An optional local
+embeddings stage (`[hybrid]` extra, off by default) can be fused into the
+ranking; the default install runs zero neural inference.
 
 1. **Tokenize** with `re.split(r"[\W_]+")`, so `aws_s3_bucket` matches `s3 bucket`
    and a query like "fastapi route handler" overlaps the indexer's structured
@@ -141,6 +142,12 @@ Built-in parsers live in `agmem.parsers`:
 - **`py.py`** — Python: top-level classes, functions, FastAPI-style routes
   (regex on `@router.get/post/...`). Tags include framework hints
   (`Document → mongodb`, `BaseModel → pydantic`).
+- **`go.py`** — Go: package, types (struct/interface), functions, methods on
+  receivers, chi/gin/echo/gorilla HTTP route registrations. Generated files
+  (`_mock.go`, `.pb.go`) and `_test.go` are parsed but tagged for filtering.
+- **`yaml.py`** — YAML/Helm: flattens documents into dotted key-paths
+  (`app.env.FEATURE_FLAG`) with scalar values as labels, so BM25 matches on
+  both key identifiers and values. Handles multi-document streams.
 - **`md.py`** — Markdown: H1/H2/H3 headings, ADR-style status (single-line and
   multi-line under `## Status`), `last_updated:`, table-row density.
   `split_sections()` slices long docs into per-H2 chunks for the indexer.
@@ -161,8 +168,8 @@ extension_labels:
 ## Design principles
 
 - **Local-first.** Everything is a file in `.agmem/`. Inspect with `cat`,
-  version with git, edit in your editor. There's no daemon, no service, no
-  remote.
+  version with git, edit in your editor. No required daemon, no service, no
+  remote (an optional `agmem watch` file-watcher exists for hot reindexing).
 
 - **CLI only, no MCP.** Tool integration is shell-out + stdout markdown. Works
   with anything that can call a binary — Claude Code, Codex, Cursor, a shell
@@ -186,8 +193,9 @@ extension_labels:
 
 - **Boring tech where possible.** BM25 over JSONL beats embeddings + vector DB
   for this scope: searches are fast, results are explainable, the data is grep-
-  and diff-able. Embedding-based discovery (for fuzzy aliases) is on the
-  roadmap as opt-in, not as the default substrate.
+  and diff-able. Dense-embedding retrieval ships as a strictly opt-in add-on
+  (`[hybrid]` extra + config flag) fused into the BM25 ranking — never as the
+  default substrate.
 
 - **Don't write what you can derive.** Every memory should have provenance you
   can re-check. Indexer entries are derivable from the repo state; user
@@ -274,7 +282,7 @@ The output is markdown with stable headers (`## Constraints`, `## Facts`,
 | Tool family | Difference |
 |---|---|
 | **Mem0 / Letta / Zep / mem-style libraries** | They target chat agents and personal long-term memory across topics. agmem is code-specific, git-aware, diff-aware, and inspectable as plain JSONL. |
-| **Vector DBs (Chroma, Qdrant, pgvector, etc.)** | agmem doesn't use embeddings at all. We index lexically and bound retrieval cost to ~50ms with no GPU/network. |
-| **MCP servers (memory tools, filesystem mounts)** | agmem is shell-out, not MCP. No protocol coupling, no daemon. Wires into any agent that runs commands. |
+| **Vector DBs (Chroma, Qdrant, pgvector, etc.)** | agmem is lexical-first — sub-100ms BM25 with no GPU/network. The opt-in `[hybrid]` extra adds local sentence-transformers vectors cached as a flat `.npy` file: still no server, no index to run, nothing leaves the machine. |
+| **MCP servers (memory tools, filesystem mounts)** | agmem is shell-out, not MCP. No protocol coupling, no long-running server required. Wires into any agent that runs commands. |
 | **Doc generators (mkdocs, automated readmes)** | Those produce static docs. agmem produces a queryable, source-linked, kind-typed memory store with drift detection. |
 | **CLAUDE.md / `.cursorrules` / `.aiderules` etc.** | Those are global static rules. agmem retrieves *task-relevant* memory per query and lets you keep facts/patterns separate from rules. |

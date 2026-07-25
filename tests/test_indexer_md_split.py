@@ -33,21 +33,21 @@ def repo(monkeypatch):
 def test_long_md_splits_into_sections(repo: Path):
     """A markdown file with >= 4 H2 sections and > 1500 bytes should yield
     one master entry plus one entry per H2 section."""
-    body = "# Bomber\n\n"
+    body = "# Herald\n\n"
     for i, name in enumerate(["Overview", "Stack", "Processing Flow", "Auth Methods", "Failure Modes"]):
         body += f"## {name}\n\n"
         body += f"This is the {name.lower()} section. " * 30 + "\n\n"
 
     (repo / "services").mkdir()
-    (repo / "services" / "bomber.md").write_text(body, encoding="utf-8")
+    (repo / "services" / "herald.md").write_text(body, encoding="utf-8")
 
     run_index(str(repo))
     entries = read_all_entries(str(repo))
 
-    bomber_entries = [e for e in entries if e.source_ref and "bomber.md" in e.source_ref]
-    refs = [e.source_ref for e in bomber_entries]
+    herald_entries = [e for e in entries if e.source_ref and "herald.md" in e.source_ref]
+    refs = [e.source_ref for e in herald_entries]
     # Master + 5 sections
-    assert len([e for e in bomber_entries if e.source_ref == "services/bomber.md"]) == 1
+    assert len([e for e in herald_entries if e.source_ref == "services/herald.md"]) == 1
     section_refs = [r for r in refs if r and "#" in r]
     assert len(section_refs) == 5
     # Section slugs

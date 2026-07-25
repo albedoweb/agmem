@@ -51,6 +51,28 @@ DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 _MODEL_CACHE: dict = {}
 
 
+def _load_st_model(model_name: str):
+    """Load a SentenceTransformer model. Tries the HF hub cache first
+    (offline) so a flaky network or corp DNS blip on a fully-cached model
+    doesn't crash the query — huggingface_hub otherwise HEADs the hub even
+    for cached models (e.g. adapter_config.json probe). Only if the offline
+    load fails (model genuinely not cached) do we hit the network."""
+    from sentence_transformers import SentenceTransformer
+    try:
+        return SentenceTransformer(model_name, device="cpu", local_files_only=True)
+    except Exception:
+        return SentenceTransformer(model_name, device="cpu")
+
+
+def _load_ce_model(model_name: str):
+    """CrossEncoder counterpart of ``_load_st_model``."""
+    from sentence_transformers import CrossEncoder
+    try:
+        return CrossEncoder(model_name, device="cpu", local_files_only=True)
+    except Exception:
+        return CrossEncoder(model_name, device="cpu")
+
+
 def is_available() -> bool:
     """True iff the ``hybrid`` extras (sentence-transformers + numpy) import."""
     try:
@@ -121,8 +143,7 @@ class Embedder:
         if self._model is None:
             cached = _MODEL_CACHE.get(self.model_name)
             if cached is None:
-                from sentence_transformers import SentenceTransformer
-                cached = SentenceTransformer(self.model_name, device="cpu")
+                cached = _load_st_model(self.model_name)
                 _MODEL_CACHE[self.model_name] = cached
             self._model = cached
         return self._model
@@ -226,8 +247,7 @@ class Reranker:
         if self._model is None:
             cached = _MODEL_CACHE.get(self.model_name)
             if cached is None:
-                from sentence_transformers import CrossEncoder
-                cached = CrossEncoder(self.model_name, device="cpu")
+                cached = _load_ce_model(self.model_name)
                 _MODEL_CACHE[self.model_name] = cached
             self._model = cached
         return self._model

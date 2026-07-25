@@ -211,32 +211,32 @@ def test_tag_suggestions_respects_seen_tags_from_prior_queries():
 
 
 def test_run_ask_creates_session_on_first_call(repo: Path):
-    append_entry(create_entry("Bomber webhook delivery service", source_ref="services/bomber.md", kind="fact"))
-    result = run_ask("bomber webhook")
+    append_entry(create_entry("Herald webhook delivery service", source_ref="services/herald.md", kind="fact"))
+    result = run_ask("herald webhook")
     assert result.is_new_session is True
     assert len(result.top) >= 1
     s = load_session()
     assert s is not None
     assert len(s.queries) == 1
-    assert s.queries[0].q == "bomber webhook"
+    assert s.queries[0].q == "herald webhook"
 
 
 def test_run_ask_continues_existing_session(repo: Path):
-    append_entry(create_entry("Bomber service", source_ref="services/bomber.md", kind="fact"))
+    append_entry(create_entry("Herald service", source_ref="services/herald.md", kind="fact"))
     append_entry(create_entry("Crawler service", source_ref="services/crawler.md", kind="fact"))
-    run_ask("bomber")
+    run_ask("herald")
     result = run_ask("crawler")
     assert result.is_new_session is False
     assert len(result.session.queries) == 2
     # seen_refs accumulated across both queries
-    assert any("bomber" in r for r in result.session.seen_refs)
+    assert any("herald" in r for r in result.session.seen_refs)
     assert any("crawler" in r for r in result.session.seen_refs)
 
 
 def test_run_ask_new_flag_starts_fresh(repo: Path):
-    append_entry(create_entry("Bomber service", source_ref="services/bomber.md", kind="fact"))
-    run_ask("bomber")
-    result = run_ask("bomber", new_session=True)
+    append_entry(create_entry("Herald service", source_ref="services/herald.md", kind="fact"))
+    run_ask("herald")
+    result = run_ask("herald", new_session=True)
     assert result.is_new_session is True
     assert len(result.session.queries) == 1
 
@@ -289,31 +289,31 @@ def test_run_ask_returns_empty_gracefully(repo: Path):
 
 
 def test_run_ask_session_persists_to_disk(repo: Path):
-    append_entry(create_entry("Bomber service", source_ref="services/bomber.md", kind="fact"))
-    run_ask("bomber")
+    append_entry(create_entry("Herald service", source_ref="services/herald.md", kind="fact"))
+    run_ask("herald")
     raw = json.loads((repo / ".agmem" / SESSION_FILENAME).read_text())
-    assert raw["queries"][0]["q"] == "bomber"
-    assert "services/bomber.md" in raw["seen_refs"]
+    assert raw["queries"][0]["q"] == "herald"
+    assert "services/herald.md" in raw["seen_refs"]
 
 
 def test_run_ask_tag_filter_restricts_results(repo: Path):
     """``run_ask(query, tag=X)`` should only return entries tagged X — even if
     other entries match the query better by BM25."""
     append_entry(create_entry(
-        text="Mytruv account ID is 123456789012",
-        source_ref="notes/mytruv.md", kind="fact",
-        source="manual", tags=["mytruv", "aws"],
+        text="Storefront account ID is 123456789012",
+        source_ref="notes/storefront.md", kind="fact",
+        source="manual", tags=["storefront", "aws"],
     ))
     append_entry(create_entry(
-        text="Mytruv-related Truv-prod terraform shares modules from terraform/modules/aws/",
+        text="Storefront-related prod terraform shares modules from terraform/modules/aws/",
         source_ref="notes/modules.md", kind="fact",
         source="manual", tags=["modules"],
     ))
-    # Query matches both, but only the first is tagged 'mytruv'.
-    result = run_ask("mytruv terraform", tag="mytruv")
+    # Query matches both, but only the first is tagged storefront.
+    result = run_ask("storefront terraform", tag="storefront")
     returned = [e.id for e, _ in result.top]
     assert len(returned) == 1
-    assert result.top[0][0].tags == ["mytruv", "aws"]
+    assert result.top[0][0].tags == ["storefront", "aws"]
 
 
 def test_run_ask_no_tag_returns_unfiltered(repo: Path):
