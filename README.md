@@ -9,6 +9,8 @@ store. BM25-first retrieval — embeddings are an optional local add-on, never
 required. Git-aware — `post-merge` hook keeps memory in sync when teammates
 push. No MCP, no SaaS, nothing leaves your machine. Apache 2.0.
 
+![agmem demo](./docs/demo/agmem-demo.gif)
+
 > Your `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/` are static. Your repo
 > isn't. `agmem` indexes your code (Terraform, Python, Go, YAML/Helm,
 > Markdown), extracts glossary aliases automatically, and answers
