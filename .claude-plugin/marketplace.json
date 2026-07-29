@@ -1,0 +1,24 @@
+{
+  "name": "agmem",
+  "description": "agmem \u2014 persistent, source-linked project memory for coding agents",
+  "owner": {
+    "name": "albedoweb",
+    "url": "https://github.com/albedoweb"
+  },
+  "plugins": [
+    {
+      "name": "agmem",
+      "source": "./plugin",
+      "version": "0.1.0",
+      "description": "Persistent project memory for Claude Code \u2014 indexes your repo into local JSONL and auto-injects task-relevant context (BM25, no LLM calls, nothing leaves your machine)",
+      "category": "utilities",
+      "tags": [
+        "memory",
+        "context",
+        "bm25",
+        "local-first",
+        "retrieval"
+      ]
+    }
+  ]
+}

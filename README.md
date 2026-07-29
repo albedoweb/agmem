@@ -78,7 +78,17 @@ boost in retrieval.
 ## Use with your agent
 
 `agmem context` is plain CLI + stdout markdown, so anything that shells out
-works. Claude Code has the deepest integration:
+works. Claude Code has the deepest integration — easiest path is the
+**plugin** (auto-injects task-relevant context on every prompt, ships an
+agmem skill and an `/agmem:setup` command):
+
+```text
+/plugin marketplace add albedoweb/agmem
+/plugin install agmem@agmem
+/agmem:setup
+```
+
+Or wire it manually:
 
 ```bash
 agmem init --emit-claude-md --install-hook --install-git-hook

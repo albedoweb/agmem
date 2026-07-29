@@ -1,0 +1,13 @@
+{
+  "name": "agmem",
+  "displayName": "agmem — project memory",
+  "version": "0.1.0",
+  "description": "Persistent project memory for Claude Code — indexes your repo into local JSONL and auto-injects task-relevant context (BM25, no LLM calls, nothing leaves your machine)",
+  "author": {
+    "name": "Nikolay Fokin",
+    "url": "https://github.com/albedoweb"
+  },
+  "repository": "https://github.com/albedoweb/agmem",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "context", "bm25", "local-first", "retrieval", "terraform", "python"]
+}
