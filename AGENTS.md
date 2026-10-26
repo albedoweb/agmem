@@ -19,8 +19,9 @@ Development setup: `uv sync`. Checks: `uv run pytest -q` and
 
 After changing indexed source files, refresh with a full `agmem index`, review
 the diff in `.agmem/memories.jsonl`, and include the updated snapshot when
-appropriate. Full indexing is currently needed to reliably remove obsolete
-Markdown sections. Keep runtime state and private notes out of the shared index.
+appropriate. Incremental updates refresh affected directories; use a full index
+for the shared repository-wide snapshot. Keep runtime state and private notes
+out of the shared index.
 See [shared index maintenance](docs/shared-index.md).
 
 The Codex plugin and installation steps are in [docs/codex-plugin.md](docs/codex-plugin.md).
