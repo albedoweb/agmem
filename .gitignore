@@ -10,7 +10,11 @@ __pycache__/
 agmem-experiments/
 internal-docs/
 
-# Local agmem state (memories, indexes, golden-set archives) — never push.
-.agmem/
+# Share this repository's reviewed source index; keep runtime state local.
+.agmem/*
+!.agmem/config.yaml
+!.agmem/memories.jsonl
+# Local research brief, not part of the published source index.
+AGENT_BRIEF.md
 .DS_Store
 *.egg-info/

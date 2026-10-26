@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agmem",
+  "version": "0.1.0",
+  "description": "Local project memory for coding agents: retrieve source-linked context and set up the agmem CLI.",
+  "author": {
+    "name": "Nikolay Fokin",
+    "url": "https://github.com/albedoweb"
+  },
+  "repository": "https://github.com/albedoweb/agmem",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "context", "bm25", "coding"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "agmem",
+        "shortDescription": "Search local project memory before exploring code",
+        "longDescription": "Retrieve task-specific context from an inspectable local index. Includes setup and memory maintenance workflows; no service or API key required.",
+        "developerName": "albedoweb",
+        "category": "Developer Tools",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://github.com/albedoweb/agmem",
+        "defaultPrompt": ["Use agmem to find project context for this task."]
+      }
+    }
+  }
+}
