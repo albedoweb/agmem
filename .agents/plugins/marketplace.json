@@ -1,0 +1,20 @@
+{
+  "name": "agmem-local",
+  "interface": {
+    "displayName": "agmem"
+  },
+  "plugins": [
+    {
+      "name": "agmem",
+      "source": {
+        "source": "local",
+        "path": "./codex-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

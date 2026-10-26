@@ -77,6 +77,10 @@ boost in retrieval.
 
 ## Use with your agent
 
+**Codex:** install the bundled [Codex plugin](./docs/codex-plugin.md) for
+retrieval and setup skills. This repository also includes a
+[reviewed source-index snapshot](./docs/shared-index.md) for its own development.
+
 `agmem context` is plain CLI + stdout markdown, so anything that shells out
 works. Claude Code has the deepest integration — easiest path is the
 **plugin** (auto-injects task-relevant context on every prompt, ships an
