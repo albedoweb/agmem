@@ -189,7 +189,9 @@ def _build_entry(
     )
 
 
-def _walk_files(root: Path, scope: Path | None = None) -> list[FileInfo]:
+def _walk_files(
+    root: Path, scope: Path | None = None, *, recursive: bool = True,
+) -> list[FileInfo]:
     """Walk the tree under `scope` (defaults to root). Paths in FileInfo are root-relative."""
     spec = _load_gitignore(root)
     files: list[FileInfo] = []
@@ -198,7 +200,8 @@ def _walk_files(root: Path, scope: Path | None = None) -> list[FileInfo]:
         return files
 
     for dirpath, dirnames, filenames in os.walk(walk_root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS)
+        dirnames[:] = (sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS)
+                       if recursive else [])
         for fname in sorted(filenames):
             fpath = Path(dirpath) / fname
             if _should_skip(fpath, root, spec):
@@ -599,49 +602,16 @@ def run_update(since_ref: str = "HEAD~1", cwd: str | None = None) -> dict:
             "removed": 0,
         }
 
-    affected_dirs: set[str] = set()
-    for p in surviving_paths + deleted_paths:
-        d = str(Path(p).parent)
-        affected_dirs.add(d if d not in ("", ".") else ".")
-
-    # Walk each affected directory once (non-recursive, to keep dir summary scoped to
-    # files directly in that directory, matching the full-index behavior).
-    affected_files: list[FileInfo] = []
-    for d in affected_dirs:
-        scope = root if d == "." else root / d
-        if not scope.is_dir():
-            continue
-        for fi in _walk_files(root, scope=scope):
-            if fi.directory == d or (d == "." and fi.directory == "."):
-                affected_files.append(fi)
-
-    commit = _git_head_sha(root)
-    existing = read_all_entries(cwd, include_deleted=True)
-    preserve_from = {e.id: e for e in existing if e.source == INDEX_SOURCE}
-
-    parser_cfg = load_parser_config(config.agmem_dir(cwd))
-    new_entries = _build_memories(
-        affected_files, root, commit, preserve_from,
-        include_summary=False, parser_config=parser_cfg,
-    )
-    new_ids = {e.id for e in new_entries}
-
-    remove_ids: set[str] = set()
-    for p in deleted_paths:
-        remove_ids.add(stable_id(INDEX_SOURCE, p))
-
-    final = [e for e in existing if e.id not in new_ids and e.id not in remove_ids]
-    final.extend(new_entries)
-    rewrite_entries(final, cwd)
+    result = apply_paths(surviving_paths, deleted_paths, cwd=cwd)
 
     return {
         "since": since_ref,
-        "to_commit": commit,
+        "to_commit": _git_head_sha(root),
         "modified": modified_count,
         "added": added_count,
         "deleted": len(deleted_paths),
-        "upserted": len(new_entries),
-        "removed": len(remove_ids),
+        "upserted": result["upserted"],
+        "removed": result["removed"],
     }
 
 
@@ -650,11 +620,13 @@ def apply_paths(
     paths_deleted: list[str],
     cwd: str | None = None,
 ) -> dict:
-    """Reindex a specific set of paths and remove entries for deleted paths.
+    """Replace index entries for the direct parent directories of changed paths.
 
     Used by ``agmem watch`` to apply queue batches without going through git.
-    Mirrors :func:`run_update`'s behavior but takes paths directly instead
-    of computing them from ``git diff <since_ref>``.
+    Also used by :func:`run_update`. Read all sibling files so directory
+    summaries stay complete, and replace the old derived entries (including
+    Markdown sections) rather than only upserting IDs still present. Manual
+    memories, unrelated directories, and the repository aggregate are kept.
 
     Skips paths covered by :func:`_should_skip` (``.agmem/``, ``.git/``,
     ``.gitignore``-matched). Returns counts of upserts / removes / skipped.
@@ -663,40 +635,25 @@ def apply_paths(
     root = _config.find_repo_root(cwd)
     spec = _load_gitignore(root)
 
-    surviving: list[str] = []
-    deleted: list[str] = []
+    affected_dirs: set[str] = set()
     skipped = 0
-    for p in paths_modified:
-        full = root / p
-        if _should_skip(full, root, spec) or not full.is_file():
-            skipped += 1
-            continue
-        surviving.append(p)
-    for p in paths_deleted:
+    for p in set(paths_modified + paths_deleted):
         full = root / p
         if _should_skip(full, root, spec):
             skipped += 1
             continue
-        deleted.append(p)
+        affected_dirs.add(str(Path(p).parent))
 
-    if not surviving and not deleted:
+    if not affected_dirs:
         return {"upserted": 0, "removed": 0, "skipped_ignored": skipped}
 
-    # Build FileInfo entries directly from paths (no directory walk).
+    # Reconcile against disk, not queued event labels: an old delete event
+    # may refer to a file that has already been recreated by an atomic save.
     affected_files: list[FileInfo] = []
-    for p in surviving:
-        full = root / p
-        try:
-            size = full.stat().st_size
-        except OSError:
-            continue
-        parent = str(Path(p).parent) if Path(p).parent != Path(".") else "."
-        affected_files.append(FileInfo(
-            path=p,
-            ext=full.suffix,
-            size=size,
-            directory=parent,
-        ))
+    for directory in sorted(affected_dirs):
+        scope = root / directory
+        if scope.is_dir():
+            affected_files.extend(_walk_files(root, scope=scope, recursive=False))
 
     commit = _git_head_sha(root)
     existing = read_all_entries(cwd, include_deleted=True)
@@ -709,11 +666,17 @@ def apply_paths(
     )
     new_ids = {e.id for e in new_entries}
 
-    remove_ids: set[str] = set()
-    for p in deleted:
-        remove_ids.add(stable_id(INDEX_SOURCE, p))
+    def belongs_to_affected_directory(entry: MemoryEntry) -> bool:
+        if entry.source != INDEX_SOURCE or not entry.source_ref or "summary" in entry.tags:
+            return False
+        base = entry.source_ref.split("#", 1)[0]
+        if "directory" in entry.tags:
+            return base in affected_dirs
+        return str(Path(base).parent) in affected_dirs
 
-    final = [e for e in existing if e.id not in new_ids and e.id not in remove_ids]
+    replaced = [e for e in existing if belongs_to_affected_directory(e)]
+    remove_ids = {e.id for e in replaced if e.id not in new_ids}
+    final = [e for e in existing if not belongs_to_affected_directory(e)]
     final.extend(new_entries)
     rewrite_entries(final, cwd)
 

@@ -33,10 +33,11 @@ isolation, use separate clones and separate indexes.
 
 ## Maintain
 
-When the user requests a refresh, prefer a full `agmem index`: incremental
-updates currently leave obsolete Markdown section entries in some cases.
-`agmem watch` is optional polling (600 seconds by default), and restarting it
-does not reconcile edits made while it was stopped.
+When the user requests a full refresh, use `agmem index`. Incremental updates
+refresh affected directories, including removed Markdown sections; they leave
+the repository-wide aggregate for the next full index. `agmem watch` performs
+a full index at startup, then polls for changes (600 seconds by default).
+The watcher is optional, and polling does not make retrieval instantly fresh.
 
 When asked to preserve a durable discovery, save a concise fact or rule with
 its source, within the user's authorized repository:

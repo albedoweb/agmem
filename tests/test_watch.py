@@ -207,7 +207,7 @@ class Greeter:
         f.unlink()
         enqueue(None, "src/old.py", "deleted")
         result = apply_queue_once()
-        assert result["removed"] == 1
+        assert result["removed"] == 2  # file and now-empty directory summary
 
         entries = read_all_entries()
         refs = [e.source_ref for e in entries]

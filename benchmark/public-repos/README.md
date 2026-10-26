@@ -87,7 +87,9 @@ establish non-inferiority. Freeze the criterion before seeing pilot outcomes.
 
 ## Freshness gate
 
-Known incremental Markdown deletion and watcher restart gaps should be fixed
-and covered before claiming robust current-state memory. Until then, a pilot
-can describe static, fully indexed retrieval, and report freshness cases as
-known failures. Do not generalize static lookup wins to always-current memory.
+Run the incremental-update and watcher recovery regressions before a pilot.
+The fixed paths cover Markdown replacement/deletion, directory summaries,
+offline changes at watcher startup, and retry after a failed poll. Record the
+actual refresh policy and polling interval: those tests do not imply instantly
+fresh retrieval or isolated memory across worktrees. Do not generalize static
+lookup wins to always-current memory.

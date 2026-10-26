@@ -103,8 +103,19 @@ emits per-directory summaries plus per-file content entries. Re-running is
 idempotent: same content → same `id`, `verified_at` survives.
 
 `agmem update --since HEAD~1` is a diff-aware partial reindex. After the
-post-merge git hook fires (i.e. after `git pull`), only the touched files and
-their directory summaries are re-emitted; the rest of the store is untouched.
+post-merge git hook fires (i.e. after `git pull`), entries in the touched files'
+direct parent directories are re-emitted; the rest of the store is untouched.
+Both Git updates and watcher batches replace the derived entries for each
+affected directory using all its direct files. Removed or renamed Markdown
+sections and files that no longer yield parsed content are dropped; manual
+memories and nested/unrelated directories are preserved. The repository-wide
+aggregate is refreshed by a full index.
+
+`agmem watch` performs a full reindex on startup to reconcile changes made while
+it was stopped, then polls for incremental changes (600 seconds by default).
+It advances its file snapshot only after a successful update, so failed batches
+can be retried. Startup therefore costs a full scan; polling is not immediate
+freshness, and manual memories are not automatically rewritten.
 
 ---
 

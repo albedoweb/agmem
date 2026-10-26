@@ -6,6 +6,14 @@ All notable changes to agmem are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- Incremental indexing removes obsolete Markdown sections on deletion, rename,
+  or shortening and drops content entries when their symbols disappear.
+- Watcher batches rebuild directory summaries from all direct sibling files
+  and remove summaries for empty directories.
+- Watcher startup fully reconciles offline changes, and failed polls retry
+  without acknowledging an unapplied file snapshot.
+
 ## [0.1.0] — 2026-07-25
 
 First public release.

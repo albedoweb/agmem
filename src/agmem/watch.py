@@ -8,7 +8,7 @@ Design:
 - Append events to each repo's .agmem/_watch_queue.jsonl as they arrive.
 - Every ``interval`` seconds (default 600), per repo: diff mtimes, enqueue
   changes, ``apply_paths()``, then atomically empty the queue.
-- On startup, replay any queue left from a prior crash before arming.
+- On startup, fully reconcile the index with disk, then replay leftover events.
 - Repo list comes from positional args, else the global watchlist
   (``$XDG_CONFIG_HOME/agmem/watchlist`` → ``~/.config/agmem/watchlist``), which
   is re-read each cycle (hot-reload) so repos can be added/removed without a
@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
-from .indexer import _load_gitignore, _should_skip, apply_paths
+from .indexer import _load_gitignore, _should_skip, apply_paths, run_index
 
 QUEUE_FILENAME = "_watch_queue.jsonl"
 EDITOR_SWAP_EXTS: set[str] = {".swp", ".swx", ".swo", ".swn"}
@@ -255,9 +255,14 @@ class RepoWatcher:
         self.mtime_map: dict[str, float] = {}
 
     def bootstrap(self) -> dict:
-        """Replay any leftover queue (crash recovery), then snapshot mtimes."""
-        applied = apply_queue_once(self.cwd)
+        """Reconcile offline edits and deletions before starting incremental polls."""
+        # Snapshot first: edits during the full scan remain detectable next tick.
+        self.spec = _load_gitignore(self.root)
         self.mtime_map = _scan_tree(self.root, self.spec)
+        indexed, _, files = run_index(cwd=str(self.root))
+        applied = apply_queue_once(self.cwd)
+        applied["reindexed"] = indexed
+        applied["files"] = files
         return applied
 
     def tick(self) -> dict:
@@ -278,8 +283,10 @@ class RepoWatcher:
                 rel = _repo_rel(Path(abs_path), self.root)
                 if rel:
                     enqueue(self.cwd, rel, "modified")
+        applied = apply_queue_once(self.cwd)
+        # A failed apply must not acknowledge the new snapshot; retry next tick.
         self.mtime_map = current
-        return apply_queue_once(self.cwd)
+        return applied
 
 
 def _build_watcher(root: str) -> RepoWatcher | None:
@@ -291,6 +298,7 @@ def _build_watcher(root: str) -> RepoWatcher | None:
     try:
         watcher = RepoWatcher(root)
         applied = watcher.bootstrap()
+        print(f"[watch] {root}: reconciled {applied['files']} files on startup.")
         if applied.get("events", 0) > 0:
             print(f"[watch] {root}: replayed {applied['events']} queued events.")
         return watcher

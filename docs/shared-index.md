@@ -18,10 +18,11 @@ indexer may include untracked files that are not excluded by the root
 state or private memories. Treat the snapshot as a navigation aid and verify
 answers against current source.
 
-Use full indexing for this snapshot. Incremental updates currently do not
-reliably remove obsolete Markdown sections, and watcher startup does not
-reconcile edits made during downtime. Manual memories are preserved by full
-indexing and require their own review.
+Use full indexing for this snapshot so the repository-wide aggregate is also
+refreshed. Incremental updates replace derived entries for affected directories,
+including obsolete Markdown sections. Watcher startup performs a full reindex
+to reconcile downtime changes; subsequent polls remain incremental. Manual
+memories are preserved and require their own review.
 
 `source_commit` records HEAD at indexing time, so an index included in a new
 commit normally refers to its parent. File hashes describe the indexed working

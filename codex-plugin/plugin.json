@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agmem",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local project memory for coding agents: retrieve source-linked context and set up the agmem CLI.",
   "author": {
     "name": "Nikolay Fokin",
